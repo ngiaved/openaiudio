@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState, type ReactNode } from "react";
-import { Activity, Server, Users } from "lucide-react";
+import { Activity, AlertTriangle, Server, Users } from "lucide-react";
 import { TopBar } from "@/components/TopBar";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/fields";
@@ -123,6 +123,12 @@ function TargetRows({ session }: { session: NonNullable<AdminStatus["sessions"]>
               {t.state}
               {t.provider ? <span className="font-mono text-mute">({t.provider})</span> : null}
             </span>
+            {t.error && (
+              <div className="mt-1 flex items-start gap-1 text-[11px] leading-snug text-red-400">
+                <AlertTriangle className="mt-0.5 size-3 shrink-0" />
+                <span className="break-words whitespace-pre-wrap">{t.error}</span>
+              </div>
+            )}
           </td>
           <td className={cn("px-3 py-2.5 text-right font-mono", t.errors ? "text-red-400" : "text-mute")}>{t.errors}</td>
           <td className="px-3 py-2.5 text-right font-mono">{t.audience}</td>

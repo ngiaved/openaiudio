@@ -6,6 +6,7 @@ proceso para que los tests sean deterministas y no toquen red ni credenciales.
 """
 
 import asyncio
+import time
 
 import pytest
 from fastapi.testclient import TestClient
@@ -60,6 +61,8 @@ def test_builtins_defaults(tmp_path):
     v = vs.get("gemini")
     assert v is not None and v.enabled and v.protocol == "gemini"
     assert len(v.api_key_masked) >= 8
+    # xax necesita modelo de STT por defecto (no debe nacer sin modelo)
+    assert vs.get("xai").stt_model != ""
 
 
 def test_builtin_without_key_auto_disabled(tmp_path):
@@ -147,6 +150,63 @@ def test_switching_vendors_toggles_active(st):
     assert all(t.active_vendor_id == "mock" for t in s.targets.values())
     asyncio.run(store.switch_vendors(s.id))
     assert all(t.active_vendor_id == "gemini" for t in s.targets.values())
+
+
+def test_fallback_switch_allows_immediate_start_then_cooldown(st):
+    """Switch a fallback consume el flag `_fallback_pending`: el arranque del
+    fallback no queda bloqueado por el cooldown del error del primario. Si el
+    fallback también falla al arrancar, ahí sí se fija cooldown (sin espiral)."""
+    store = st()
+    v1 = store.vendors.create({"name": "V1", "base_url": "https://a/v1", "api_key": "k", "stt_mode": "inline_audio", "stt_model": "", "supports_stt": True, "supports_translate": False})
+    v2 = store.vendors.create({"name": "V2", "base_url": "https://b/v1", "api_key": "k", "stt_mode": "inline_audio", "stt_model": "", "supports_stt": True, "supports_translate": False})
+    s = store.create_session(CreateSessionRequest(title="T", original_language="en", vendor_id=v1.id, fallback_vendor_id=v2.id))
+    en = s.targets["en"]
+
+    # error fatal en el primario → switch a fallback, pending en pie
+    store._try_fallback(s, en, "authentication: invalid_api_key")
+    assert en.active_vendor_id == v2.id and en._fallback_pending is True
+
+    # por más que el primario haya quedado en cooldown (9999 s), el intento de
+    # arranque consume el pending y descarta ese cooldown → arranca con el fallback
+    en.cooldown_until = time.time() + 9999
+    asyncio.run(store._start_target(s, en))
+    assert en._fallback_pending is False
+    assert en.cooldown_until < time.time() + 1000  # el cooldown del primario ya no aplica
+    assert en.provider is None  # el fallback también falló al arrancar (sin modelo STT)
+
+    # ahora sí: el fallback dejó cooldown → sin espiral de reintentos
+    assert en.cooldown_until > time.time()
+    budget = store._active_providers
+    asyncio.run(store._start_target(s, en))
+    assert en.provider is None and store._active_providers == budget
+
+
+def test_start_error_sets_cooldown_stop_loop(st):
+    """Un error de configuración en el arranque (p. ej. falta modelo STT) pone
+    cooldown en el target: las llamadas subsiguientes de _start_target no
+    reintentan en bucle ni fugan presupuesto."""
+    store = st()
+    store.vendors.create(
+        {
+            "name": "Sin Modelo",
+            "base_url": "https://api.example/v1",
+            "api_key": "k",
+            "stt_mode": "inline_audio",
+            "stt_model": "",
+            "supports_stt": True,
+            "supports_translate": False,
+        }
+    )
+    s = store.create_session(CreateSessionRequest(title="T", original_language="en", vendor_id="sin-modelo"))
+    en = s.targets["en"]
+    asyncio.run(store._start_target(s, en))
+    assert en.provider is None
+    assert en.cooldown_until > time.time()
+    budget = store._active_providers
+    # segundo intento inmediato: cooldown → no crea provider ni consume presupuesto
+    asyncio.run(store._start_target(s, en))
+    assert en.provider is None
+    assert store._active_providers == budget
 
 
 def test_fallback_only_on_fatal_errors(st):

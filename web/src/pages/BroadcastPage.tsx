@@ -479,6 +479,9 @@ function TransmitCard({ session, onClose, onDelete }: {
                     {activeVendors[l.lang] && (
                       <span className="ml-2 rounded bg-white/5 px-1 py-0 text-[10px] text-neon">{activeVendors[l.lang]}</span>
                     )}
+                    {l.error && (
+                      <span className="ml-2 text-[10px] text-red-400">⚠ {l.error}</span>
+                    )}
                     <div className="truncate text-slate-500">▸ {l.partial || l.preview || "…"}</div>
                   </div>
                 </div>

@@ -26,6 +26,7 @@ def session_out(store: Store, session) -> dict:
                 "via": t.via,
                 "state": t.state,
                 "is_original": t.kind == "original",
+                "error": t.error,
                 "partial": t.buffer.partial[-160:],
                 "preview": t.buffer.segments[-1].text if t.buffer.segments else "",
             }

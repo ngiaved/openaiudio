@@ -26,6 +26,7 @@ from app.vendors import VendorStore
 log = logging.getLogger("openaiudio.store")
 
 SWEEP_INTERVAL = 30.0
+START_ERROR_COOLDOWN = 30.0  # segundos sin reintentar tras un error de arranque permanente
 
 
 @dataclass
@@ -43,6 +44,9 @@ class Target:
     _starting: bool = False
     active_vendor_id: str | None = None  # vendor en uso (primario o fallback)
     switched_fallback: bool = False
+    cooldown_until: float = 0.0  # no reintentar arranque antes de esta marca de tiempo
+    _fallback_pending: bool = False  # hubo switch de fallback en este ciclo de error
+    error: str = ""  # último mensaje de error (para el panel de producción)
 
     def __post_init__(self) -> None:
         self.buffer = CaptionBuffer(lang=self.lang, kind=self.kind)
@@ -294,6 +298,13 @@ class Store:
             target.state = "queued"
             self._set_state(session.id, target.lang, "queued")
             return
+        if target._fallback_pending:
+            # el switch a fallback pide arranque inmediato: consumimos el flag y
+            # limpiamos el cooldown que dejó el error del vendor primario.
+            target._fallback_pending = False
+            target.cooldown_until = 0.0
+        if time.time() < target.cooldown_until:
+            return  # error de arranque permanente reciente: no hacer espiral de reintentos
         target.provider = None
         self._active_providers += 1
         try:
@@ -307,20 +318,32 @@ class Store:
                 self._active_providers,
             )
             await target.provider.start()
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
             log.exception("provider %s/%s lanzó excepción", session.id, target.lang)
-            if getattr(target.provider, "state", None) == "error":
-                pass
-            elif target.provider is not None:
+            if target.provider is not None:
                 target.provider.state = "error"
             else:
-                self._target_error(session.id, target.lang, "no se pudo crear el provider")
+                self._target_error(session.id, target.lang, str(exc) or "no se pudo crear el provider")
         if target.provider is not None and target.provider.state == "error":
             self._active_providers = max(0, self._active_providers - 1)
             target.provider = None
             target._starting = False
+            if not target._fallback_pending:
+                # hubo switch a fallback → el próximo arranque no espera cooldown
+                target.cooldown_until = time.time() + START_ERROR_COOLDOWN
             await self._promote_queued()
             return
+        if target.provider is None:
+            self._active_providers = max(0, self._active_providers - 1)
+            target._starting = False
+            target.cooldown_until = time.time() + START_ERROR_COOLDOWN
+            await self._promote_queued()
+            return
+        target._starting = False
+        if target.stash:
+            staged, target.stash = target.stash, []
+            for seg in staged:
+                asyncio.create_task(self._safe_on_text(target, seg))
         target._starting = False
         if target.stash:
             staged, target.stash = target.stash, []
@@ -437,12 +460,15 @@ class Store:
         session = self.get(session_id)
         if session and lang in session.targets:
             session.targets[lang].state = state
+            if state in ("live", "warming"):
+                session.targets[lang].error = ""  # al recuperar, limpiamos el error previo
         self._broadcast(session_id, lang, {"type": "state", "lang": lang, "state": state})
 
     def _target_error(self, session_id: str, lang: str, message: str) -> None:
         session = self.get(session_id)
         if session and lang in session.targets:
             session.targets[lang].errors += 1
+            session.targets[lang].error = message
         self._broadcast(
             session_id,
             lang,
@@ -470,6 +496,7 @@ class Store:
             return
         target.active_vendor_id = fb
         target.switched_fallback = True
+        target._fallback_pending = True
         log.info("sesión %s/%s → switch a vendor fallback %s", session.id, target.lang, fb)
         self._broadcast(
             session.id,
@@ -486,6 +513,8 @@ class Store:
         for t in session.targets.values():
             t.active_vendor_id = fb if t.active_vendor_id == session.vendor_id else session.vendor_id
             t.switched_fallback = True
+            t._fallback_pending = False
+            t.cooldown_until = 0.0  # el nuevo vendor arranca de inmediato
             await self._stop_target(t)
             t.state = "idle"
         log.info("switch manual de vendor en sesión %s (ahora %s)", session_id, fb)
@@ -624,6 +653,7 @@ class Store:
                         "via": t.via,
                         "state": t.state,
                         "errors": t.errors,
+                        "error": t.error,
                         "audience": self.audience_count(session.id, lang),
                         "partial": t.buffer.partial[-96:],
                         "segments": len(t.buffer.segments),

@@ -28,6 +28,7 @@ export interface LanguageInfo {
   via: "audio" | "text";
   state: string;
   is_original: boolean;
+  error: string;
   partial: string;
   preview: string;
 }
@@ -78,6 +79,7 @@ export interface AdminTarget {
   via: string;
   state: string;
   errors: number;
+  error: string;
   audience: number;
   partial: string;
   segments: number;

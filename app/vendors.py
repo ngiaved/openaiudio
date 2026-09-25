@@ -46,7 +46,7 @@ BUILTIN_SPECS: list[dict] = [
         "protocol": "openai",
         "base_url": "https://api.x.ai/v1",
         "env_key": "XAI_API_KEY",
-        "stt_model": "",
+        "stt_model": "grok-3",
         "translate_model": "grok-3",
         "supports_stt": True,
         "supports_translate": True,
