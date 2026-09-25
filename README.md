@@ -54,6 +54,22 @@ The short version; full rationale lives in the
 - Optional: a `GEMINI_API_KEY` (Google AI Studio) for cloud providers; `ollama`
   for the fully-local provider.
 
+### Which Gemini model to use (cloud)
+
+For captions to appear with `PROVIDER=gemini`, these two settings must point to
+a **text-capable model that exists on your key/account** (set both in `.env`):
+
+- `GEMINI_MODEL=gemini-3.8-flash` — original captions (windowed STT: inline
+  audio → text).
+- `GEMINI_TEXT_MODEL=gemini-3.8-flash` — translations (text → text). Defaults
+  to `GEMINI_MODEL` when unset.
+
+If the model name is wrong or unavailable, every request fails and **no
+captions are produced**. `GEMINI_LIVE_MODEL` matters only for the experimental
+`TRANSLATION_MODE=audio` path. Note the free tier is rate-limited to ~20
+requests/day per model — a billing-enabled key is recommended for a real event
+(see [DEPLOYMENT.md](docs/DEPLOYMENT.md)).
+
 ## Getting started
 
 ```bash
@@ -79,7 +95,7 @@ Then open:
 .venv/bin/pytest tests/        # end-to-end pipeline with the mock provider
 ```
 
-- **Local automated suite** — 18 tests cover the caption buffers, ingest/audience
+- **Local automated suite** — 19 tests cover the caption buffers, ingest/audience
   WS protocol, the admin/session API and the full e2e flow, all without network.
 - **Frontend** — `cd web && npm run dev` runs Vite on :5173 proxying the backend.
 - **Live smoke test (real Gemini)** — with a key in `.env` and `PROVIDER=gemini`:
