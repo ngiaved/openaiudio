@@ -68,7 +68,7 @@ class Settings:
     gemini_live_model: str = field(default_factory=lambda: os.environ.get("GEMINI_LIVE_MODEL", "gemini-3.5-transcribe-live"))
     stt_window_sec: float = field(default_factory=lambda: float(os.environ.get("STT_WINDOW_SEC", "6.5")))
     stt_step_sec: float = field(default_factory=lambda: float(os.environ.get("STT_STEP_SEC", "5.0")))
-    stt_min_energy_db: float = field(default_factory=lambda: float(os.environ.get("STT_MIN_ENERGY_DB", "-36")))
+    stt_min_energy_db: float = field(default_factory=lambda: float(os.environ.get("STT_MIN_ENERGY_DB", "-60")))
     stt_timeout_sec: float = field(default_factory=lambda: float(os.environ.get("STT_TIMEOUT_SEC", "60")))
     provider: str = field(default_factory=lambda: os.environ.get("PROVIDER", "auto").strip().lower())
     enabled_vendors: str = field(default_factory=lambda: os.environ.get("ENABLED_VENDORS", "").strip())
