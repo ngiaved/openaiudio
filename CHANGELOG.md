@@ -1,39 +1,39 @@
 # Changelog
 
-Todos los cambios notables de OpenAIudio quedan en este archivo, en formato
-[Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/) y versionado
-[SemVer](https://semver.org/lang/es/).
+All notable changes to OpenAIudio are documented in this file, following
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
+[SemVer](https://semver.org/).
 
 ## [Unreleased]
 
 ### Added
-- Pipeline end-to-end de transcripción y traducción simultánea.
-- Topología híbrida: original por audio; traducción por audio o texto,
-  configurable por sesión (`audio | text | auto`).
-- Providers: Gemini Live (audio), Gemini text (texto), faster-whisper +
-  Gemma/Ollama (local), y `mock` (demos/CI).
-- Archivos de subtítulos: buffers por (sesión, idioma), export SRT/VTT/TXT.
-- Aplicación web React/Vite: vista de audiencia, consola de broadcast y panel
-  de producción, servida por el propio FastAPI.
-- REST/WS API: sesiones, glosario, ingestión de audio, audiencia, feeds
-  (texto plano y archivos para OBS/vMix), healthz, status de producción.
-- Tests de la API y del pipeline end-to-end con provider mock.
-- Documentación: ADR-0001 (topología híbrida), ADR-0002 (stack frontend),
-  guías de arquitectura y despliegue, seguridad, contribución, CoC.
-- CI en GitHub Actions (backend + frontend) y Dependabot.
-- Licencia Apache-2.0.
+- End-to-end simultaneous transcription and translation pipeline.
+- Hybrid topology: original always via audio; translations via audio or text,
+  configurable per session (`audio | text | auto`).
+- Providers: Gemini Live (audio), Gemini text (text), faster-whisper +
+  Gemma/Ollama (local), and `mock` (demos/CI).
+- Caption files: per-(session, language) buffers, SRT/VTT/TXT export.
+- React/Vite web app: audience view, broadcast console and production panel,
+  served by FastAPI itself.
+- REST/WS API: sessions, glossary, audio ingest, audience, feeds (plain text
+  and files for OBS/vMix), healthz, production status.
+- API and end-to-end pipeline tests with the mock provider.
+- Documentation: ADR-0001 (hybrid topology), ADR-0002 (frontend stack),
+  architecture and deployment guides, security, contribution, CoC.
+- GitHub Actions CI (backend + frontend) and Dependabot.
+- Apache-2.0 license.
 
 ### Fixed
-- Enrutado de WebSockets: la ingestión de audio vivía bajo `/api/`
-  (`/api/ws/ingest/...`) por el prefijo del router; se movió a `/ws/ingest/...`
-  con un router propio.
-- `AudienceConn` no era hashable (TypeError al registrar audiencia).
+- WebSocket routing: audio ingest lived under `/api/`
+  (`/api/ws/ingest/...`) because of the router prefix; moved to
+  `/ws/ingest/...` with its own router.
+- `AudienceConn` was not hashable (TypeError when registering an audience).
 
 ## [0.1.0] - 2026-09
 
-Primera versión con transmisión real de audio de navegador a servidor,
-generación de subtítulos con el provider `mock` y vista de audiencia en vivo.
+First release with real audio streaming from browser to server, caption
+generation with the `mock` provider and a live audience view.
 
-## [0.0.1] - 2026-09 · no publicado
+## [0.0.1] - 2026-09 · unpublished
 
-Esqueleto inicial (estructura del repo, licencia, config base).
+Initial skeleton (repo structure, license, base config).

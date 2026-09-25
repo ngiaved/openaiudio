@@ -1,26 +1,44 @@
-# Guía de despliegue (conferencia)
+# Deployment guide (conference)
 
-Guía paso a paso para levantar OpenAIudio en la laptop de producción de un
-evento. Requisito: Python 3.11+ y Node 20+ (solo para buildear el front).
+Step-by-step guide to run OpenAIudio on an event's production laptop.
+Requirements: Python 3.11+ and Node 20+ (only to build the frontend).
 
-## 1) Instalar el backend
+## 1) Install the backend
 
 ```bash
 python3 -m venv .venv
 .venv/bin/pip install -e .
 ```
 
-## 2) Configurar credenciales
+## 2) Configure credentials
 
 ```bash
 cp .env.example .env
-# editar .env: al menos GEMINI_API_KEY si se usa la nube
+# edit .env: at minimum GEMINI_API_KEY if you use the cloud
 ```
 
-Si **no** hay key, `PROVIDER=auto` cae en el provider `mock` (útil para
-ensayar el flujo completo sin internet).
+If there is **no** key, `PROVIDER=auto` falls back to the `mock` provider
+(useful for rehearsing the whole flow without internet).
 
-## 3) Buildear el frontend (una vez)
+### Which Gemini model to use
+
+For the cloud provider to work, `GEMINI_MODEL` and `GEMINI_TEXT_MODEL` must
+both be set to a text-capable model that exists on your Google AI Studio
+account:
+
+- `GEMINI_MODEL=gemini-3.8-flash` — used for the **original** captions
+  (windowed STT: inline audio → generated text).
+- `GEMINI_TEXT_MODEL=gemini-3.8-flash` — used for **translations** (text → text).
+  If unset, it defaults to `GEMINI_MODEL`.
+- `GEMINI_LIVE_MODEL=gemini-3.5-transcribe-live` — **only** needed for the
+  experimental `TRANSLATION_MODE=audio` path. Ignored otherwise.
+
+If the model name is wrong or not available on the key, every request fails
+with an invalid-model error and no captions are produced. Free-tier keys have a
+small daily quota (≈20 requests/day per model); a paid/Billing-enabled key is
+recommended for a real event.
+
+## 3) Build the frontend (once)
 
 ```bash
 cd web
@@ -29,9 +47,9 @@ npm run build
 cd ..
 ```
 
-El build queda en `web/dist` y FastAPI lo sirve solo.
+The build lives in `web/dist` and FastAPI serves it by itself.
 
-## 4) Correr
+## 4) Run
 
 ```bash
 .venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000
@@ -40,36 +58,36 @@ El build queda en `web/dist` y FastAPI lo sirve solo.
 Web: `http://localhost:8000` · API docs: `http://localhost:8000/docs`
 · Health: `http://localhost:8000/healthz`
 
-Desde otra notebook del evento se entra por la IP de la máquina
-(`http://192.168.x.x:8000`); asegurar que el firewall de macOS permita la
-conexión entrante en el puerto 8000.
+From another laptop in the venue, browse to the machine's IP
+(`http://192.168.x.x:8000`); make sure the macOS firewall allows inbound
+connections on port 8000.
 
-## 5) Operar durante la charla
+## 5) Operate during the talk
 
-1. **Producción** → `http://…:8000/admin`: ver sesiones, estados, audiencia.
-2. **Broadcast** → `http://…:8000/broadcast` desde la laptop del escenario:
-   crear la sesión, elegir idiomas y presionar **Transmitir**. Conceder el
-   permiso de micrófono.
-3. **Audiencia** → `http://…:8000`: elegir sesión e idioma en cada pantalla.
+1. **Production** → `http://…:8000/admin`: watch sessions, states, audience.
+2. **Broadcast** → `http://…:8000/broadcast` from the stage laptop: create the
+   session, pick languages and press **Transmit**. Grant the microphone
+   permission.
+3. **Audience** → `http://…:8000`: pick a session and language on each screen.
 
 ### OBS / vMix
 
-- Overlay de texto plano: `GET http://host:8000/feed/{session_id}/live?lang=es`
-  (o el archivo `data/{session_id}.{lang}.live.txt` si se configura
-  `OBS_OUT_DIR`). Bajar cada X segundos y mostrarlo en un texto fuente.
-- Subtítulos finales: exportar en `POST`/`GET
-  /api/sessions/{id}/export?fmt=srt` al terminar.
+- Plain-text overlay: `GET http://host:8000/feed/{session_id}/live?lang=en`
+  (or the file `data/{session_id}.{lang}.live.txt` when `OBS_OUT_DIR` is set).
+  Poll every few seconds and show it in a text source.
+- Final captions: export with `POST`/`GET
+  /api/sessions/{id}/export?fmt=srt` when the talk ends.
 
-## 6) Modo 100 % local
+## 6) Fully local mode
 
-Instalar Ollama con `gemma3:4b` (`ollama pull gemma3:4b`), `faster-whisper`,
-y fijar `PROVIDER=local`. La traducción sale por texto vía Gemma.
+Install Ollama with `gemma3:4b` (`ollama pull gemma3:4b`), `faster-whisper`,
+and set `PROVIDER=local`. Translation then runs via text through Gemma.
 
-## Puesta a punto del evento
+## Event readiness checklist
 
-- Health check automatizado: `curl -fsS http://localhost:8000/healthz`.
-- Probar 5 min antes: crear sesión con `mock`, transmitir 10 s, abrir la vista
-  de audiencia por Wi-Fi del evento y verificar subtítulos.
-- Recomendado `MAX_PROVIDERS` acorde a los idiomas: 1 original + N
-  traducciones por escenario, por práctico subir a 2× como margen.
-- Tener a mano la key de fallback y un cable de red como plan B.
+- Automated health check: `curl -fsS http://localhost:8000/healthz`.
+- Test 5 minutes ahead: create a session with `mock`, broadcast for 10 s, open
+  the audience view on the venue Wi-Fi and verify captions appear.
+- Recommended `MAX_PROVIDERS` to match the languages: 1 original + N
+  translations per stage; practically, scale to 2× as margin.
+- Keep a fallback key and a network cable handy as plan B.

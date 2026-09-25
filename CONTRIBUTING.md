@@ -1,39 +1,39 @@
-# Contribuyendo
+# Contributing
 
-¡Gracias por querés ayudar con OpenAIudio! Pedidos abiertos: más idiomas,
-proveedores (Whisper.cpp, Deepgram, local streaming), accesibilidad, y
-herramientas de operación para el evento.
+Thanks for wanting to help with OpenAIudio! Open asks: more languages,
+providers (Whisper.cpp, Deepgram, local streaming), accessibility, and
+operator tooling for the event.
 
-## Setup local
+## Local setup
 
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
 cd web && npm install && cd ..
 .venv/bin/pytest tests/ -q
-cd web && npm run build   # + npm run dev para HMR
+cd web && npm run build   # + npm run dev for HMR
 ```
 
-## Convenciones
+## Conventions
 
-- **Commits**: [Conventional Commits](https://www.conventionalcommits.org/es/)
+- **Commits**: [Conventional Commits](https://www.conventionalcommits.org/)
   (`feat:`, `fix:`, `docs:`, `test:`, `refactor:`, `ci:`, `chore:`).
-- **Versiones**: SemVer; cada cambio que toca comportamiento se anota en
-  `CHANGELOG.md` bajo *Unreleased*.
-- **Backend**: Python con tipado; cada nueva pieza de lógica lleva tests en
-  `tests/`. Corre `.venv/bin/pytest tests/ -q` antes de abrir el PR.
-- **Frontend**: TypeScript estricto; el CI corre `tsc --noEmit && vite build`.
-  Nada de emojis en el código ni docs, salvo pedido explícito.
-- **Idioma de las interfaces**: es/en (las labels de la web están en español).
+- **Versions**: SemVer; any behavior-affecting change is recorded in
+  `CHANGELOG.md` under *Unreleased*.
+- **Backend**: Python with type hints; every new piece of logic ships with
+  tests in `tests/`. Run `.venv/bin/pytest tests/ -q` before opening the PR.
+- **Frontend**: strict TypeScript; CI runs `tsc --noEmit && vite build`.
+  No emojis in code or docs unless explicitly requested.
+- **UI language**: English (all labels/titles are in English).
 
-## Decisiones de diseño
+## Design decisions
 
-Cualquier decisión estructural se decide en un archivo bajo `docs/adr/`
-(siguiendo [MADR](https://adr.github.io/)): contexto, opciones, decisión,
-consecuencias. Discutí el ADR en el issue/PR antes de codificar lo grande.
+Any structural decision goes in a file under `docs/adr/`
+(following [MADR](https://adr.github.io/)): context, options, decision,
+consequences. Discuss the ADR on the issue/PR before writing the big change.
 
 ## PRs
 
-1. `feat/` o `fix/` corto desde `main`.
-2. Tests verdes + build del front OK.
-3. Changelog actualizado en *Unreleased*.
-4. Un reviewer aprueba y mergea con squash.
+1. Short `feat/` or `fix/` branch off `main`.
+2. Green tests + frontend build OK.
+3. Changelog updated under *Unreleased*.
+4. One reviewer approves, merge with squash.

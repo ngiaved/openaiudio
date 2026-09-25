@@ -1,42 +1,41 @@
-# Código de Conducta
+# Code of Conduct
 
-## Nuestro compromiso
+## Our pledge
 
-En el interés de fomentar un entorno abierto y acogedor, nosotros, como
-contribuyentes y mantenedores, nos comprometemos a hacer que la participación
-en nuestro proyecto sea una experiencia libre de acoso para todas las personas,
-independientemente de edad, tamaño corporal, discapacidad, etnia, identidad y
-expresión de género, nivel de experiencia, nacionalidad, apariencia, raza,
-religión o identidad y orientación sexual.
+In the interest of fostering an open and welcoming environment, we, as
+contributors and maintainers, pledge to make participation in our project a
+harassment-free experience for everyone, regardless of age, body size,
+disability, ethnicity, gender identity and expression, level of experience,
+nationality, personal appearance, race, religion, or sexual identity and
+orientation.
 
-## Nuestros estándares
+## Our standards
 
-Ejemplos de comportamiento que contribuyen a crear un entorno positivo:
+Examples of behavior that contribute to creating a positive environment:
 
-- Usar lenguaje acogedor e inclusivo.
-- Ser respetuoso de los diferentes puntos de vista y experiencias.
-- Aceptar con gratitud la crítica constructiva.
-- Enfocarse en lo que es mejor para la comunidad.
-- Mostrar empatía hacia las demás personas de la comunidad.
+- Using welcoming and inclusive language.
+- Being respectful of differing viewpoints and experiences.
+- Gracefully accepting constructive criticism.
+- Focusing on what is best for the community.
+- Showing empathy towards other community members.
 
-## Nuestras responsabilidades
+## Our responsibilities
 
-Los mantenedores del proyecto son responsables de aclarar los estándares de
-comportamiento aceptable y se espera que tomen las medidas correctivas
-apropiadas y justas en respuesta a cualquier caso de comportamiento
-inaceptable.
+Project maintainers are responsible for clarifying the standards of acceptable
+behavior and are expected to take appropriate and fair corrective action in
+response to any instances of unacceptable behavior.
 
-## Alcance
+## Scope
 
-Este Código de Conducta aplica tanto dentro del proyecto como en espacios
-públicos cuando una persona representa al proyecto o a su comunidad.
+This Code of Conduct applies both within project spaces and in public spaces
+when an individual is representing the project or its community.
 
-## Aplicación
+## Enforcement
 
-Los casos de abuso, acoso o comportamiento inaceptable pueden ser reportados
-contactando al equipo del proyecto. Todas las quejas serán revisadas e
-investigadas y darán como resultado una respuesta considerada necesaria y
-apropiada a las circunstancias.
+Instances of abusive, harassing, or otherwise unacceptable behavior may be
+reported by contacting the project team. All complaints will be reviewed and
+investigated and will result in a response that is deemed necessary and
+appropriate to the circumstances.
 
-Este Código de Conducta está adaptado de
-[Contributor Covenant, versión 2.1](https://www.contributor-covenant.org/es/version/2/1/code_of_conduct.html).
+This Code of Conduct is adapted from the
+[Contributor Covenant, version 2.1](https://www.contributor-covenant.org/version/2/1/code_of_conduct.html).

@@ -1,27 +1,27 @@
 # Security Policy
 
-## Reporte de vulnerabilidades
+## Reporting vulnerabilities
 
-OpenAIudio es software para eventos con red de confianza; no es un servicio
-multi-tenant expuesto a internet. Aun así, cualquier falla que comprometa una
-máquina o clave se toma en serio.
+OpenAIudio is software for events on a trusted network; it is not a
+multi-tenant service exposed to the internet. Even so, any flaw that could
+compromise a machine or a key is taken seriously.
 
-- **No** publiques la falla en issues públicos.
-- Enviá un reporte por email a los mantenedores (ver `git log` / sección
-  contribuidores) con: descripción, pasos para reproducir, impacto.
-- Respuesta esperada: confirmación ≤ 72 h, y un fix planeado según severidad.
+- **Do not** file the issue in public issue trackers.
+- Email a report to the maintainers (see `git log` / contributing section)
+  with: description, reproduction steps, impact.
+- Expected response: confirmation ≤ 72 h, and a fix planned by severity.
 
-## Buenas prácticas
+## Best practices
 
-- **Nunca** committear `.env` ni claves (`.env` y `.venv/` están en gitignore).
-- `GEMINI_API_KEY` solo en la máquina de producción, con rotación por evento.
-- El servidor asume red local; detrás de un proxy se debe exponer con HTTPS:
-  `X-Forwarded-*` (uvicorn `--proxy-headers`) y auth si el panel `/admin`
-  queda accesible fuera de la red del evento.
-- El micrófono del navegador solo se usa previo consentimiento explícito
-  (`getUserMedia`), y el audio no se guarda en disco salvo que se habilite
-  `OBS_OUT_DIR`.
+- **Never** commit `.env` or keys (`.env` and `.venv/` are gitignored).
+- Keep `GEMINI_API_KEY` only on the production machine, rotated per event.
+- The server assumes a local network; when exposed behind a proxy, use HTTPS:
+  `X-Forwarded-*` (uvicorn `--proxy-headers`) and auth if the `/admin` panel
+  is reachable outside the event network.
+- The browser microphone is only used after explicit consent
+  (`getUserMedia`), and audio is never written to disk unless `OBS_OUT_DIR`
+  is enabled.
 
-## Alcance
+## Scope
 
-Aplican a `app/` (backend) y `web/` (frontend) de la rama `main`.
+Applies to `app/` (backend) and `web/` (frontend) on the `main` branch.
