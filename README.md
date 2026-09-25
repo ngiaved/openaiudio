@@ -129,6 +129,12 @@ Deeper walkthroughs: [ARCHITECTURE.md](docs/ARCHITECTURE.md),
 [DEPLOYMENT.md](docs/DEPLOYMENT.md), and a
 [local-only HOWTO](docs/LOCAL_WHISPER.md) (Whisper + Ollama on macOS/Linux/Windows).
 
+## Media
+
+Screenshots and a demo screen-recording video live in
+[SCREENSHOTS.md](docs/SCREENSHOTS.md)
+([video](https://www.youtube.com/watch?v=_wItGKUtfIU)).
+
 ## Configuration
 
 Every option is documented in [.env.example](.env.example): `PROVIDER`,
