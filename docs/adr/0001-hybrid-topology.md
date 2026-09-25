@@ -30,7 +30,7 @@ total, pero latencia y calidad dependientes del hardware de la laptop.
 - El **original** siempre se genera desde audio (Gemini Live o whisper local).
 - Las **traducciones** se generan por **audio** (Gemini Live, streaming) o por
   **texto** (modelo de texto Gemini o Gemma/Ollama), configurable por sesión.
-- Modo `auto`: audio si el proveedor es Gemini/mock; texto si es local.
+- Modo `auto`: audio solo para el mock (demo); texto para Gemini y local (ver Nota abajo).
 
 ## Decisión
 
@@ -51,3 +51,11 @@ Negativas:
 - Dos caminos de calidad distintos para traducción (audio vs texto).
 - El proveedor por texto reintenta con backoff; la primera traducción de texto
   puede tardar más que la de audio en arrancar.
+
+Nota sobre modo `auto` (revisada tras probar con API key real):
+- El original con Gemini usa STT por **ventanas** (audio `generate_content` +
+  texto), no Live streaming: los modelos `*-transcribe-live` son preview e
+  inestables, y la vía por ventanas es robusta y barata.
+- `auto` queda como: **audio** solo para el mock (demo); **texto** para
+  Gemini (traducción) y local. La vía Live (audio) sigue disponible
+  explícitamente con `TRANSLATION_MODE=audio` y `GEMINI_LIVE_MODEL`.

@@ -5,6 +5,27 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 
+
+def _load_env_file(path: str = ".env") -> None:
+    """Carga `.env` al entorno si existe (las variables ya seteadas ganan)."""
+    if not os.path.exists(path):
+        return
+    try:
+        with open(path, encoding="utf-8") as fh:
+            for raw in fh:
+                line = raw.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, _, value = line.partition("=")
+                key = key.strip()
+                if key and key not in os.environ:
+                    os.environ[key] = value.strip().strip("\"'")
+    except OSError:
+        pass
+
+
+_load_env_file()
+
 AUDIO_RATE = 16_000  # PCM mono 16 kHz, little-endian (formato de Gemini Live).
 
 # Nombres cortos (BCP-47) -> nombre legible para la UI.
@@ -34,8 +55,13 @@ def _bool(name: str, default: bool = False) -> bool:
 @dataclass(frozen=True)
 class Settings:
     gemini_api_key: str = field(default_factory=lambda: os.environ.get("GEMINI_API_KEY", "").strip())
-    gemini_model: str = field(default_factory=lambda: os.environ.get("GEMINI_MODEL", "gemini-3.1-flash-live-preview"))
-    gemini_text_model: str = field(default_factory=lambda: os.environ.get("GEMINI_TEXT_MODEL", "gemini-2.5-flash"))
+    gemini_model: str = field(default_factory=lambda: os.environ.get("GEMINI_MODEL", "gemini-3.8-flash"))
+    gemini_text_model: str = field(default_factory=lambda: os.environ.get("GEMINI_TEXT_MODEL", "gemini-3.8-flash"))
+    gemini_live_model: str = field(default_factory=lambda: os.environ.get("GEMINI_LIVE_MODEL", "gemini-3.5-transcribe-live"))
+    stt_window_sec: float = field(default_factory=lambda: float(os.environ.get("STT_WINDOW_SEC", "6.5")))
+    stt_step_sec: float = field(default_factory=lambda: float(os.environ.get("STT_STEP_SEC", "5.0")))
+    stt_min_energy_db: float = field(default_factory=lambda: float(os.environ.get("STT_MIN_ENERGY_DB", "-36")))
+    stt_timeout_sec: float = field(default_factory=lambda: float(os.environ.get("STT_TIMEOUT_SEC", "60")))
     provider: str = field(default_factory=lambda: os.environ.get("PROVIDER", "auto").strip().lower())
     translation_mode: str = field(default_factory=lambda: os.environ.get("TRANSLATION_MODE", "auto").strip().lower())
     max_providers: int = field(default_factory=lambda: int(os.environ.get("MAX_PROVIDERS", "80")))

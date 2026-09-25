@@ -83,12 +83,17 @@ def provider_shape(provider: str, kind: str, via: str) -> tuple[bool, bool]:
 
 
 def default_via(provider: str, mode: str) -> str:
-    """Decide la vía de traducción según el modo configurado (audio | text | auto)."""
+    """Decide la vía de traducción según el modo configurado (audio | text | auto).
+
+    La vía por texto es robusta y económica (generate_content sobre segmentos
+    finales); es el default para Gemini. La vía por audio (Live streaming)
+    queda como opción experimental con `audio` explícito o con el mock.
+    """
     if mode == "audio":
         return "audio"
     if mode == "text":
         return "text"
-    return "audio" if provider in ("gemini", "mock") else "text"
+    return "text" if provider in ("gemini", "local") else "audio"
 
 
 class Store:
@@ -178,7 +183,9 @@ class Store:
             if target.kind == "original":
                 return local_mod.LocalWhisperProvider(ctx)
             return local_mod.OllamaTranslateProvider(ctx)
-        if target.kind == "original" or target.via == "audio":
+        if target.kind == "original":
+            return gemini_mod.GeminiChunkSttProvider(ctx)
+        if target.via == "audio":
             return gemini_mod.GeminiProvider(ctx)
         return gemini_mod.GeminiTextTranslateProvider(ctx)
 

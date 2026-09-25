@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+import numpy as np
 
 from app.providers.base import TranscriptProvider
 
@@ -45,14 +46,24 @@ def build_prompt(ctx) -> str:
 
 
 class GeminiProvider(TranscriptProvider):
+    """Live streaming experimental (Gemini Live + texto).
+
+    Precisa un modelo que soporte la modalidad TEXT (hoy los previews
+    '*-transcribe-live' / '*-live-translate-preview'). Dado que esos modelos son
+    inestables en preview, la ruta por defecto de OpenAIudio es el STT por
+    chunks (GeminiChunkSttProvider) + traducción por texto.
+    """
+
     def __init__(self, ctx) -> None:
         super().__init__(ctx)
-        self.model = ctx.settings.gemini_model
+        self.model = ctx.settings.gemini_live_model
         self._session = None
+        self._acm = None
         self._client = None
         self._out_queue: asyncio.Queue[bytes] = asyncio.Queue(maxsize=200)
         self._tasks: list[asyncio.Task] = []
         self._partial: str = ""
+        self._partial_for: dict[str, str] = {"input_transcription": "", "output_transcription": ""}
         self._max_retries = 3
 
     def _make_client(self):
@@ -79,12 +90,12 @@ class GeminiProvider(TranscriptProvider):
         from google.genai import types
 
         client = self._make_client()
-        config = {
-            "response_modalities": ["TEXT"],
-            "system_instruction": {"parts": [{"text": build_prompt(self.ctx)}]},
-        }
-        session = await client.aio.live.connect(model=self.model, config=config)
-        self._session = session
+        config: dict = {"response_modalities": ["TEXT"]}
+        if self.ctx.kind == "translate":
+            config["translation_config"] = {"target_language_code": self.ctx.lang}
+        config["system_instruction"] = {"parts": [{"text": build_prompt(self.ctx)}]}
+        self._acm = client.aio.live.connect(model=self.model, config=config)
+        self._session = await self._acm.__aenter__()
         self._tasks = [
             asyncio.create_task(self._audio_loop()),
             asyncio.create_task(self._receive_loop()),
@@ -130,8 +141,19 @@ class GeminiProvider(TranscriptProvider):
                     content = getattr(msg, "server_content", None)
                     if content is None:
                         continue
+                    emitted = False
+                    for tr_field in ("input_transcription", "output_transcription"):
+                        tr = getattr(content, tr_field, None)
+                        text = getattr(tr, "text", None) if tr is not None else None
+                        if isinstance(text, str) and text:
+                            if getattr(tr, "finished", False):
+                                self._finalize_field(tr_field, text)
+                            else:
+                                self._partial_for[tr_field] = text
+                                self._emit("partial", text)
+                            emitted = True
                     model_turn = getattr(content, "model_turn", None)
-                    if model_turn is not None:
+                    if model_turn is not None and not emitted:
                         for part in getattr(model_turn, "parts", []):
                             text = getattr(part, "text", None)
                             if isinstance(text, str) and text:
@@ -149,10 +171,18 @@ class GeminiProvider(TranscriptProvider):
                 await self._reconnect()
                 break
 
+    def _finalize_field(self, field: str, text: str) -> None:
+        self._emit("final", text)
+        self._partial_for[field] = ""
+
     def _finalize_turn(self) -> None:
         if self._partial.strip():
             self._emit("final", self._partial)
         self._partial = ""
+        for k in list(self._partial_for):
+            if self._partial_for[k].strip():
+                self._emit("final", self._partial_for[k])
+            self._partial_for[k] = ""
 
     async def _reconnect(self) -> None:
         if self._stopping:
@@ -160,11 +190,12 @@ class GeminiProvider(TranscriptProvider):
         for attempt in range(self._max_retries):
             await asyncio.sleep(1.5 * (attempt + 1))
             try:
-                if self._session is not None:
+                if self._acm is not None:
                     try:
-                        await self._session.close()
+                        await self._acm.__aexit__(None, None, None)
                     except Exception:  # noqa: BLE001
                         pass
+                    self._acm = None
                 await self._connect()
                 self._state("live")
                 log.info("gemini reconectado %s/%s", self.ctx.session_id, self.ctx.lang)
@@ -179,13 +210,196 @@ class GeminiProvider(TranscriptProvider):
         await super().stop()
         for task in self._tasks:
             task.cancel()
-        if self._session is not None:
+        if self._acm is not None:
             try:
-                await self._session.close()
+                await self._acm.__aexit__(None, None, None)
             except Exception:  # noqa: BLE001
                 pass
         self._session = None
+        self._acm = None
         self._state("stopped")
+
+
+class GeminiChunkSttProvider(TranscriptProvider):
+    """STT del original por **ventanas de audio** con un modelo multimodal por texto.
+
+    Flujo robusto y verificado con la key real: acumulamos PCM16 16 kHz en una
+    ventana deslizante (~6,5 s) y cada ~5 s enviamos la ventana como audio inline
+    (audio/wav) a generate_content_stream. El modelo devuelve partial tras
+    partial (streaming) y cerramos con final. Costo acotado, sin modelos live
+    preview: 1 request cada STEP segundos por sesión.
+    """
+
+    def __init__(self, ctx) -> None:
+        super().__init__(ctx)
+        self.model = ctx.settings.gemini_model
+        self._client = None
+        self._window = bytearray()
+        self._ticker: asyncio.Task | None = None
+        self._lock = asyncio.Lock()
+        self._busy = False
+        self._max_retries = 3
+        self._request_timeout = self.ctx.settings.stt_timeout_sec
+
+    def _make_client(self):
+        if self._client is None:
+            from google import genai
+
+            self._client = genai.Client(api_key=self.ctx.settings.gemini_api_key)
+        return self._client
+
+    async def start(self) -> None:
+        self._make_client()
+        self._state("warming")
+        if not self.ctx.settings.gemini_api_key:
+            self._state("error")
+            self.ctx.on_error("GEMINI_API_KEY no está configurada")
+            return
+        # No hacemos ping de autenticación aquí: un único 503 (rate limit
+        # temporal del modelo) no debe tumbar el provider. La primera ventana
+        # de audio ya sonará a key/modelo inválidos vía on_error.
+        self._state("live")
+        self.started_at = time.time()
+        self._ticker = asyncio.create_task(self._ticker_loop())
+
+    async def on_audio(self, chunk: bytes) -> None:
+        await super().on_audio(chunk)
+        max_samples = int(self.ctx.settings.stt_window_sec * 16000) * 2
+        async with self._lock:
+            self._window += chunk
+            if len(self._window) > max_samples:
+                del self._window[: len(self._window) - max_samples]
+        self._state("live" if self.state != "error" else "error")
+
+    def _energy_db(self, data: bytes) -> float:
+        samples = (
+            np.frombuffer(bytes(data), dtype="<i2").astype(np.float32) / 32768.0
+        ) if data else []
+        if len(samples) == 0:
+            return -100.0
+        rms = float(np.sqrt(np.mean(samples**2)))
+        if rms <= 1e-5:
+            return -90.0
+        return 20.0 * np.log10(max(rms, 1e-8))
+
+    async def _ticker_loop(self) -> None:
+        step = max(0.5, float(self.ctx.settings.stt_step_sec))
+        while not self._stopping:
+            await asyncio.sleep(step)
+            if self._busy or self.state not in ("live", "warming"):
+                continue
+            async with self._lock:
+                snap = bytes(self._window)
+            if not snap:
+                continue
+            if self._energy_db(snap) < float(self.ctx.settings.stt_min_energy_db):
+                continue
+            log.debug(
+                "ticker: transcribiendo ventana de %d bytes (state=%s energy=%.1f)",
+                len(snap), self.state, self._energy_db(snap),
+            )
+            try:
+                await asyncio.wait_for(self._transcribe(snap), timeout=self._request_timeout)
+            except asyncio.TimeoutError:
+                self.errors += 1
+                self.ctx.on_error("Gemini STT transcribe: timeout")
+            except Exception as exc:  # noqa: BLE001
+                self.errors += 1
+                self.ctx.on_error(f"Gemini STT transcribe: {exc}")
+                await asyncio.sleep(1.0)
+
+    async def _transcribe(self, wav_pcm: bytes) -> None:
+        self._busy = True
+        try:
+            await self._transcribe_impl(wav_pcm)
+        finally:
+            self._busy = False
+
+    async def _transcribe_impl(self, wav_pcm: bytes) -> None:
+        import random as _random
+
+        client = self._make_client()
+        from google.genai import types
+
+        wav_bytes = _pcm16_to_wav(wav_pcm)
+        contents = types.Content(
+            parts=[
+                types.Part.from_bytes(data=wav_bytes, mime_type="audio/wav"),
+                types.Part(text=build_prompt(self.ctx)),
+            ]
+        )
+        backoff = 1.0
+        for attempt in range(self._max_retries):
+            try:
+                return await self._stt_stream(client, types, contents)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                self.errors += 1
+                if attempt == self._max_retries - 1:
+                    self.ctx.on_error(f"Gemini STT: {exc}")
+                    return
+                self.ctx.on_error(f"Gemini STT retry {attempt + 1}: {exc}")
+                await asyncio.sleep(backoff + _random.uniform(0, 0.5))
+                backoff = min(backoff * 2, 6.0)
+
+    async def _stt_stream(self, client, types, contents) -> None:
+        stream = None
+        for attempt in range(self._max_retries):
+            try:
+                stream = await client.aio.models.generate_content_stream(
+                    model=self.model, contents=contents
+                )
+                break
+            except Exception as exc:  # noqa: BLE001
+                if attempt == self._max_retries - 1:
+                    raise
+                self.errors += 1
+                await asyncio.sleep(1.0 + attempt)
+        assert stream is not None
+        acc: list[str] = []
+        last_emit = ""
+        async for chunk in stream:
+            piece = getattr(chunk, "text", None)
+            if not isinstance(piece, str) or not piece:
+                continue
+            acc.append(piece)
+            partial = "".join(acc)
+            if len(partial) - len(last_emit) >= 2:
+                self._emit("partial", partial)
+                last_emit = partial
+        full = "".join(acc).strip()
+        if full:
+            self._emit("final", full)
+
+    async def stop(self) -> None:
+        await super().stop()
+        if self._ticker:
+            self._ticker.cancel()
+
+
+def _pcm16_to_wav(pcm: bytes, rate: int = 16_000) -> bytes:
+    """Encapsula PCM16 LE mono en un WAV RIFF mínimal (para inline audio)."""
+    import struct
+
+    n = len(pcm) // 2
+    header = struct.pack(
+        "<4sI4s4sIHHIIHH4sI",
+        b"RIFF",
+        36 + len(pcm),
+        b"WAVE",
+        b"fmt ",
+        16,
+        1,  # PCM
+        1,  # mono
+        rate,
+        rate * 2,  # byte rate
+        2,  # block align
+        16,  # bits
+        b"data",
+        len(pcm),
+    )
+    return header + pcm
 
 
 class GeminiTextTranslateProvider(TranscriptProvider):
@@ -205,6 +419,8 @@ class GeminiTextTranslateProvider(TranscriptProvider):
         self._task: asyncio.Task | None = None
         self._context: list[str] = []
         self._client = None
+        self._max_retries = 3
+        self._request_timeout = ctx.settings.stt_timeout_sec
 
     def _make_client(self):
         if self._client is None:
@@ -235,6 +451,8 @@ class GeminiTextTranslateProvider(TranscriptProvider):
             return
 
     async def _translate_loop(self) -> None:
+        import random as _random
+
         from google.genai import types
 
         client = self._make_client()
@@ -243,32 +461,48 @@ class GeminiTextTranslateProvider(TranscriptProvider):
             text = await self._q.get()
             self._context = (self._context + [text])[-self.CONTEXT_LEN :]
             payload = "\n".join(self._context)
-            acc: list[str] = []
-            last_emit = ""
-            try:
-                async for chunk in client.aio.models.generate_content_stream(
-                    model=self.ctx.settings.gemini_text_model,
-                    contents=payload,
-                    config=types.GenerateContentConfig(
-                        system_instruction=system,
-                        temperature=0.2,
-                        max_output_tokens=512,
-                    ),
-                ):
-                    piece = getattr(chunk, "text", None)
-                    if not isinstance(piece, str) or not piece:
-                        continue
-                    acc.append(piece)
-                    partial = "".join(acc)
-                    if len(partial) - len(last_emit) >= 3:
-                        self._emit("partial", partial)
-                        last_emit = partial
-                if "".join(acc).strip():
-                    self._emit("final", "".join(acc).strip())
-            except Exception as exc:  # noqa: BLE001
-                self.errors += 1
-                self.ctx.on_error(f"Gemini texto: {exc}")
-                await asyncio.sleep(0.3)
+            backoff = 1.0
+            for attempt in range(self._max_retries):
+                try:
+                    await asyncio.wait_for(
+                        self._translate_one(client, types, system, payload),
+                        timeout=self._request_timeout,
+                    )
+                    break
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:  # noqa: BLE001
+                    self.errors += 1
+                    if attempt == self._max_retries - 1:
+                        self.ctx.on_error(f"Gemini texto: {exc}")
+                        break
+                    self.ctx.on_error(f"Gemini texto retry {attempt + 1}: {exc}")
+                    await asyncio.sleep(backoff + _random.uniform(0, 0.5))
+                    backoff = min(backoff * 2, 6.0)
+
+    async def _translate_one(self, client, types, system: str, payload: str) -> None:
+        stream = await client.aio.models.generate_content_stream(
+            model=self.ctx.settings.gemini_text_model,
+            contents=payload,
+            config=types.GenerateContentConfig(
+                system_instruction=system,
+                temperature=0.2,
+                max_output_tokens=512,
+            ),
+        )
+        acc: list[str] = []
+        last_emit = ""
+        async for chunk in stream:
+            piece = getattr(chunk, "text", None)
+            if not isinstance(piece, str) or not piece:
+                continue
+            acc.append(piece)
+            partial = "".join(acc)
+            if len(partial) - len(last_emit) >= 3:
+                self._emit("partial", partial)
+                last_emit = partial
+        if "".join(acc).strip():
+            self._emit("final", "".join(acc).strip())
 
     async def stop(self) -> None:
         await super().stop()
