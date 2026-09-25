@@ -27,6 +27,10 @@ dependencies = [
 local = [
     "faster-whisper>=1.1",
 ]
+# Broadcaster headless (scripts/broadcast_cli.py): micrófono vía sounddevice.
+cli = [
+    "sounddevice>=0.4",
+]
 dev = [
     "pytest>=8",
 ]

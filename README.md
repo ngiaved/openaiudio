@@ -94,6 +94,26 @@ Then open:
 - `http://localhost:8000/admin` — production panel (shows live provider errors)
 - `http://localhost:8000/docs` — OpenAPI docs
 
+## Broadcast without the GUI (CLI)
+
+`scripts/broadcast_cli.py` replicates the `/broadcast` page from bash: it
+creates a session over REST and streams audio (microphone or a WAV file) over
+the ingest WebSocket. Handy to run several broadcasters from different
+computers against one server, or to rehearse a talk from a file:
+
+```bash
+# microphone (requires the optional extra: pip install -e ".[cli]")
+.venv/bin/python scripts/broadcast_cli.py \
+  --server http://server-ip:8000 \
+  --title Sala1 --stage Main \
+  --original-lang es --langs es,en,pt \
+  --vendor gemini --fallback xai --translation-mode text \
+  --src mic
+
+# rehearse with a local WAV (loops by default; --once for a single pass)
+.venv/bin/python scripts/broadcast_cli.py --src talk.wav --title Rehearsal --vendor gemini
+```
+
 ## How to test
 
 ```bash
