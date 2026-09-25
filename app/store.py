@@ -420,7 +420,7 @@ class Store:
             if seg is None:
                 return
             ev = {"type": "caption", "lang": lang, "kind": "final", "text": seg.text, "seq": seg.seq}
-            if kind == "original":
+            if target.kind == "original":
                 self._fanout_text(session, seg.text)
         self._broadcast(session_id, lang, ev)
         self._write_obs_feed(session, lang)

@@ -128,7 +128,7 @@ def test_text_translate_provider_starts_lazily_from_original_final():
     assert es.provider is None  # aún no hay texto → no arrancó
 
     async def run():
-        st.push_caption(session.id, "en", "original", "Hello there.")
+        st.push_caption(session.id, "en", "final", "Hello there.")  # los providers emiten "final"
         await asyncio.sleep(0.2)
         return es
 
