@@ -75,6 +75,8 @@ class TranscriptProvider(abc.ABC):
         self.ctx.emit(kind, text)
 
     def _state(self, state: str) -> None:
+        if state == self.state:
+            return  # solo se transmite cuando el estado cambia de verdad
         self.state = state
         self.ctx.on_state(state)
 

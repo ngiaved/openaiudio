@@ -107,3 +107,32 @@ def test_hybrid_via_by_translation_mode():
 
 def test_healthz(client: TestClient):
     assert client.get("/healthz").json()["ok"] is True
+
+
+def test_text_translate_provider_starts_lazily_from_original_final():
+    """Un traductor por texto no recibe audio: debe arrancar a demanda cuando llega
+    el primer final del original, sin perder el texto que venía antes de estar vivo."""
+    import asyncio
+
+    st = Store(Settings(provider="gemini", gemini_api_key="x"))
+    session = st.create_session(
+        CreateSessionRequest(
+            title="T",
+            original_language="en",
+            provider="gemini",
+            translation_mode="text",
+        )
+    )
+    es = session.targets["es"]
+    assert es.uses_text is True
+    assert es.provider is None  # aún no hay texto → no arrancó
+
+    async def run():
+        st.push_caption(session.id, "en", "original", "Hello there.")
+        await asyncio.sleep(0.2)
+        return es
+
+    es = asyncio.run(run())
+    assert es.provider is not None  # arrancó de forma diferida
+    assert es.state in ("live", "warming")
+    assert es.stash == []  # el texto pendiente ya se drenó al provider

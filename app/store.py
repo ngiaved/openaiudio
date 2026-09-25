@@ -38,6 +38,8 @@ class Target:
     buffer: CaptionBuffer = field(init=False)
     uses_audio: bool = False
     uses_text: bool = False
+    stash: list[str] = field(default_factory=list)  # texto pendiente si el provider aún arranca
+    _starting: bool = False
 
     def __post_init__(self) -> None:
         self.buffer = CaptionBuffer(lang=self.lang, kind=self.kind)
@@ -222,7 +224,14 @@ class Store:
         if target.provider.state == "error":
             self._active_providers = max(0, self._active_providers - 1)
             target.provider = None
+            target._starting = False
             await self._promote_queued()
+            return
+        target._starting = False
+        if target.stash:
+            staged, target.stash = target.stash, []
+            for seg in staged:
+                asyncio.create_task(self._safe_on_text(target, seg))
 
     async def _release_budget(self) -> None:
         self._active_providers = max(0, self._active_providers - 1)
@@ -301,8 +310,27 @@ class Store:
 
     def _fanout_text(self, session: Session, text: str) -> None:
         for t in session.targets.values():
-            if t.uses_text and t.provider is not None:
+            if not t.uses_text:
+                continue
+            t.stash.append(text)
+            if len(t.stash) > 32:  # acotado: no crecer indefinidamente
+                del t.stash[: len(t.stash) - 32]
+            if t.provider is not None:
                 asyncio.create_task(self._safe_on_text(t, text))
+            else:
+                self._ensure_text_started(session, t)
+
+    def _ensure_text_started(self, session: Session, target: Target) -> None:
+        """Arranca a demanda un traductor por texto (no lo inicia el audio).
+
+        Hasta que el provider esté listo, el texto queda en `target.stash` y
+        `_start_target` lo drena apenas el provider queda vivo.
+        """
+        if target._starting or target.state in ("live", "warming"):
+            return
+        target._starting = True
+        target.state = "idle"
+        asyncio.create_task(self._start_target(session, target))
 
     async def _safe_on_text(self, target: Target, text: str) -> None:
         try:

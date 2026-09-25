@@ -9,12 +9,31 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 import numpy as np
 
 from app.providers.base import TranscriptProvider
 
 log = logging.getLogger("openaiudio.gemini")
+
+_QUOTA_RE = re.compile(r"retry in\s+([0-9.]+)", re.IGNORECASE)
+
+
+def _quota_delay(exc: Exception) -> float | None:
+    """Segundos sugeridos por el API (RetryInfo) o un backoff razonable si es 429/503."""
+    msg = str(exc)
+    m = _QUOTA_RE.search(msg)
+    if m:
+        try:
+            return max(0.0, float(m.group(1)))
+        except ValueError:
+            pass
+    if "429" in msg or "RESOURCE_EXHAUSTED" in msg:
+        return 10.0
+    if "503" in msg or "UNAVAILABLE" in msg:
+        return 6.0
+    return None
 
 TRANSCRIBE_PROMPT = (
     "You are the live closed-caption engine of a tech conference. "
@@ -240,6 +259,8 @@ class GeminiChunkSttProvider(TranscriptProvider):
         self._busy = False
         self._max_retries = 3
         self._request_timeout = self.ctx.settings.stt_timeout_sec
+        self._quota_until = 0.0
+        self._error_broadcasted = False
 
     def _make_client(self):
         if self._client is None:
@@ -286,6 +307,8 @@ class GeminiChunkSttProvider(TranscriptProvider):
         step = max(0.5, float(self.ctx.settings.stt_step_sec))
         while not self._stopping:
             await asyncio.sleep(step)
+            if self._quota_until and time.time() < self._quota_until:
+                continue
             if self._busy or self.state not in ("live", "warming"):
                 continue
             async with self._lock:
@@ -316,8 +339,6 @@ class GeminiChunkSttProvider(TranscriptProvider):
             self._busy = False
 
     async def _transcribe_impl(self, wav_pcm: bytes) -> None:
-        import random as _random
-
         client = self._make_client()
         from google.genai import types
 
@@ -328,35 +349,30 @@ class GeminiChunkSttProvider(TranscriptProvider):
                 types.Part(text=build_prompt(self.ctx)),
             ]
         )
-        backoff = 1.0
-        for attempt in range(self._max_retries):
-            try:
-                return await self._stt_stream(client, types, contents)
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:  # noqa: BLE001
-                self.errors += 1
-                if attempt == self._max_retries - 1:
+        try:
+            await self._stt_stream(client, contents)
+            self._quota_until = 0.0
+            self._error_broadcasted = False
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            self.errors += 1
+            delay = _quota_delay(exc)
+            if delay is not None:
+                self._quota_until = time.time() + min(max(delay, 3.0), 120.0)
+            if not self._error_broadcasted:
+                self._error_broadcasted = True
+                if delay is not None:
+                    self.ctx.on_error(
+                        f"Gemini STT: cuota agotada (reintento en ~{int(round(delay))} s)"
+                    )
+                else:
                     self.ctx.on_error(f"Gemini STT: {exc}")
-                    return
-                self.ctx.on_error(f"Gemini STT retry {attempt + 1}: {exc}")
-                await asyncio.sleep(backoff + _random.uniform(0, 0.5))
-                backoff = min(backoff * 2, 6.0)
 
-    async def _stt_stream(self, client, types, contents) -> None:
-        stream = None
-        for attempt in range(self._max_retries):
-            try:
-                stream = await client.aio.models.generate_content_stream(
-                    model=self.model, contents=contents
-                )
-                break
-            except Exception as exc:  # noqa: BLE001
-                if attempt == self._max_retries - 1:
-                    raise
-                self.errors += 1
-                await asyncio.sleep(1.0 + attempt)
-        assert stream is not None
+    async def _stt_stream(self, client, contents) -> None:
+        stream = await client.aio.models.generate_content_stream(
+            model=self.model, contents=contents
+        )
         acc: list[str] = []
         last_emit = ""
         async for chunk in stream:
@@ -421,6 +437,8 @@ class GeminiTextTranslateProvider(TranscriptProvider):
         self._client = None
         self._max_retries = 3
         self._request_timeout = ctx.settings.stt_timeout_sec
+        self._quota_until = 0.0
+        self._error_broadcasted = False
 
     def _make_client(self):
         if self._client is None:
@@ -451,34 +469,47 @@ class GeminiTextTranslateProvider(TranscriptProvider):
             return
 
     async def _translate_loop(self) -> None:
-        import random as _random
-
         from google.genai import types
 
         client = self._make_client()
         system = build_prompt(self.ctx)
         while not self._stopping:
+            if self._quota_until and time.time() < self._quota_until:
+                await asyncio.sleep(min(self._quota_until - time.time(), 15.0))
+                continue
             text = await self._q.get()
-            self._context = (self._context + [text])[-self.CONTEXT_LEN :]
-            payload = "\n".join(self._context)
-            backoff = 1.0
-            for attempt in range(self._max_retries):
+            candidate = (self._context + [text])[-self.CONTEXT_LEN :]
+            waits = 0
+            while True:
                 try:
                     await asyncio.wait_for(
-                        self._translate_one(client, types, system, payload),
+                        self._translate_one(client, types, system, "\n".join(candidate)),
                         timeout=self._request_timeout,
                     )
+                    self._context = candidate
+                    self._quota_until = 0.0
+                    self._error_broadcasted = False
                     break
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:  # noqa: BLE001
                     self.errors += 1
-                    if attempt == self._max_retries - 1:
-                        self.ctx.on_error(f"Gemini texto: {exc}")
-                        break
-                    self.ctx.on_error(f"Gemini texto retry {attempt + 1}: {exc}")
-                    await asyncio.sleep(backoff + _random.uniform(0, 0.5))
-                    backoff = min(backoff * 2, 6.0)
+                    delay = _quota_delay(exc)
+                    if delay is None:
+                        if not self._error_broadcasted:
+                            self._error_broadcasted = True
+                            self.ctx.on_error(f"Gemini texto: {exc}")
+                        break  # no transitorio: soltar el segmento
+                    self._quota_until = time.time() + min(max(delay, 3.0), 120.0)
+                    if not self._error_broadcasted:
+                        self._error_broadcasted = True
+                        self.ctx.on_error(
+                            f"Gemini texto: cuota agotada (reintento en ~{int(round(delay))} s)"
+                        )
+                    waits += 1
+                    if waits > 3:
+                        break  # reniega de un segmento tras 3 esperas de cuota seguidas
+                    await asyncio.sleep(min(max(delay, 3.0), 120.0))
 
     async def _translate_one(self, client, types, system: str, payload: str) -> None:
         stream = await client.aio.models.generate_content_stream(

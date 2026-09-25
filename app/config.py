@@ -4,24 +4,32 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
+from pathlib import Path
 
 
 def _load_env_file(path: str = ".env") -> None:
-    """Carga `.env` al entorno si existe (las variables ya seteadas ganan)."""
-    if not os.path.exists(path):
-        return
-    try:
-        with open(path, encoding="utf-8") as fh:
-            for raw in fh:
-                line = raw.strip()
-                if not line or line.startswith("#") or "=" not in line:
-                    continue
-                key, _, value = line.partition("=")
-                key = key.strip()
-                if key and key not in os.environ:
-                    os.environ[key] = value.strip().strip("\"'")
-    except OSError:
-        pass
+    """Carga `.env` al entorno si existe (las variables ya seteadas ganan).
+
+    Se prueba el path tal cual está (CWD de uvicorn) y también la raíz del repo
+    aunque el servidor se levante desde otro directorio.
+    """
+    candidates = [path, str(Path(__file__).resolve().parent.parent / ".env")]
+    for candidate in candidates:
+        if not os.path.isfile(candidate):
+            continue
+        try:
+            with open(candidate, encoding="utf-8") as fh:
+                for raw in fh:
+                    line = raw.strip()
+                    if not line or line.startswith("#") or "=" not in line:
+                        continue
+                    key, _, value = line.partition("=")
+                    key = key.strip()
+                    if key and key not in os.environ:
+                        os.environ[key] = value.strip().strip("\"'")
+        except OSError:
+            continue
+        break  # primer archivo válido que exista
 
 
 _load_env_file()
