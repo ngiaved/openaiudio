@@ -19,17 +19,16 @@ dependencies = [
     "numpy>=1.26",
     "pydantic>=2.7",
     "python-multipart>=0.0.9",
+    "httpx>=0.27",
 ]
 
 [project.optional-dependencies]
 # Rute 100% local: whisper para STT + Gemma 3 vía Ollama para traducción.
 local = [
     "faster-whisper>=1.1",
-    "httpx>=0.27",
 ]
 dev = [
     "pytest>=8",
-    "httpx>=0.27",
 ]
 
 [tool.setuptools.packages.find]

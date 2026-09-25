@@ -1,5 +1,5 @@
 import { Link } from "react-router-dom";
-import { Activity, Clapperboard, RadioTower } from "lucide-react";
+import { Activity, Clapperboard, RadioTower, Settings2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/fields";
 
@@ -28,6 +28,9 @@ export function TopBar({ variant = "ghost" }: { variant?: "ghost" | "default" })
           </Link>
           <Link to="/admin" className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 hover:bg-white/5 hover:text-white">
             <Clapperboard className="size-4 text-neon" /> Producción
+          </Link>
+          <Link to="/vendors" className="flex items-center gap-1.5 rounded-lg px-3 py-1.5 hover:bg-white/5 hover:text-white">
+            <Settings2 className="size-4 text-neon" /> Vendors
           </Link>
         </nav>
         <Badge className="hidden sm:inline-flex text-emerald-300 border-emerald-400/30 bg-emerald-400/5">

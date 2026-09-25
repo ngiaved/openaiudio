@@ -29,6 +29,8 @@ class TargetContext:
     emit: Callable[[EmitKind, str], None] = lambda kind, text: None
     on_state: Callable[[str], None] = lambda state: None
     on_error: Callable[[str], None] = lambda message: None
+    vendor: object | None = None  # app.vendors.Vendor resuelto para este target
+    model_override: str = ""  # override de modelo para este target (sesión/GUI)
 
     @property
     def glossary_block(self) -> str:

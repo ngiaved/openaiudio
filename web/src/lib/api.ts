@@ -45,6 +45,11 @@ export interface SessionInfo {
   glossary: Record<string, string>[];
   languages: LanguageInfo[];
   audience_total: number;
+  vendor_id: string;
+  fallback_vendor_id: string | null;
+  stt_model: string;
+  translate_model: string;
+  session_out_active_vendors?: Record<string, string>;
 }
 
 export interface CaptionSegment {
@@ -102,6 +107,25 @@ export interface AdminStatus {
   sessions: AdminSession[];
 }
 
+export interface VendorInfo {
+  id: string;
+  name: string;
+  protocol: string;
+  builtin: boolean;
+  enabled: boolean;
+  has_api_key: boolean;
+  api_key_masked: string;
+  api_key?: string;
+  base_url: string;
+  stt_model: string;
+  translate_model: string;
+  live_model: string;
+  supports_stt: boolean;
+  supports_translate: boolean;
+  stt_mode: string;
+  azure_endpoint: string;
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, init);
   if (!res.ok) {
@@ -126,12 +150,48 @@ export function createSession(body: {
   targets: { lang: string; kind: "translate"; via?: "audio" | "text" }[];
   provider?: ProviderKind | null;
   translation_mode?: TranslationMode | null;
+  vendor_id?: string | null;
+  fallback_vendor_id?: string | null;
+  stt_model?: string | null;
+  translate_model?: string | null;
 }): Promise<SessionInfo> {
   return request("/api/sessions", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
+}
+
+export function switchVendors(sessionId: string): Promise<SessionInfo> {
+  return request(`/api/sessions/${encodeURIComponent(sessionId)}/switch`, { method: "POST" });
+}
+
+export function getVendors(): Promise<{ vendors: VendorInfo[] }> {
+  return request("/api/vendors");
+}
+
+export function createVendor(body: Partial<VendorInfo> & { name: string }): Promise<VendorInfo> {
+  return request("/api/vendors", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+export function updateVendor(id: string, body: Partial<VendorInfo>): Promise<VendorInfo> {
+  return request(`/api/vendors/${encodeURIComponent(id)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+export function deleteVendor(id: string): Promise<Response> {
+  return fetch(`/api/vendors/${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+
+export function testVendor(id: string): Promise<{ ok: boolean; vendor: string; detail: string }> {
+  return request(`/api/vendors/${encodeURIComponent(id)}/test`, { method: "POST" });
 }
 
 export function deleteSession(id: string): Promise<Response> {

@@ -19,6 +19,7 @@ from app.config import Settings
 from app.routers.admin import build_admin_router
 from app.routers.audience import build_audience_router
 from app.routers.sessions import build_sessions_router
+from app.routers.vendors import build_vendors_router
 from app.store import Store
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -56,7 +57,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     app.state.store = store
 
-    for builder in (build_sessions_router, build_audience_router, build_admin_router):
+    for builder in (build_vendors_router, build_sessions_router, build_audience_router, build_admin_router):
         routers = builder(store)
         if not isinstance(routers, (list, tuple)):
             routers = [routers]

@@ -20,6 +20,17 @@ log = logging.getLogger("openaiudio.gemini")
 _QUOTA_RE = re.compile(r"retry in\s+([0-9.]+)", re.IGNORECASE)
 
 
+def _vendor_ctx(ctx) -> object | None:
+    return getattr(ctx, "vendor", None) or None
+
+
+def _api_key(ctx) -> str:
+    vendor = _vendor_ctx(ctx)
+    if vendor is not None and getattr(vendor, "api_key", ""):
+        return vendor.api_key
+    return ctx.settings.gemini_api_key
+
+
 def _quota_delay(exc: Exception) -> float | None:
     """Segundos sugeridos por el API (RetryInfo) o un backoff razonable si es 429/503."""
     msg = str(exc)
@@ -75,7 +86,12 @@ class GeminiProvider(TranscriptProvider):
 
     def __init__(self, ctx) -> None:
         super().__init__(ctx)
-        self.model = ctx.settings.gemini_live_model
+        vendor = _vendor_ctx(ctx)
+        self.model = (
+            vendor.live_model
+            if vendor is not None and vendor.live_model
+            else ctx.settings.gemini_live_model
+        )
         self._session = None
         self._acm = None
         self._client = None
@@ -89,7 +105,7 @@ class GeminiProvider(TranscriptProvider):
         if self._client is None:
             from google import genai
 
-            self._client = genai.Client(api_key=self.ctx.settings.gemini_api_key)
+            self._client = genai.Client(api_key=_api_key(self.ctx))
         return self._client
 
     async def start(self) -> None:
@@ -251,7 +267,11 @@ class GeminiChunkSttProvider(TranscriptProvider):
 
     def __init__(self, ctx) -> None:
         super().__init__(ctx)
-        self.model = ctx.settings.gemini_model
+        vendor = _vendor_ctx(ctx)
+        self.model = (
+            ctx.model_override or (vendor.stt_model if vendor is not None and vendor.stt_model else "")
+            or ctx.settings.gemini_model
+        )
         self._client = None
         self._window = bytearray()
         self._ticker: asyncio.Task | None = None
@@ -266,15 +286,15 @@ class GeminiChunkSttProvider(TranscriptProvider):
         if self._client is None:
             from google import genai
 
-            self._client = genai.Client(api_key=self.ctx.settings.gemini_api_key)
+            self._client = genai.Client(api_key=_api_key(self.ctx))
         return self._client
 
     async def start(self) -> None:
         self._make_client()
         self._state("warming")
-        if not self.ctx.settings.gemini_api_key:
+        if not _api_key(self.ctx):
             self._state("error")
-            self.ctx.on_error("GEMINI_API_KEY no está configurada")
+            self.ctx.on_error(f"GEMINI_API_KEY / vendor {self.ctx.vendor.id if self.ctx.vendor else '?'} sin clave")
             return
         # No hacemos ping de autenticación aquí: un único 503 (rate limit
         # temporal del modelo) no debe tumbar el provider. La primera ventana
@@ -444,7 +464,7 @@ class GeminiTextTranslateProvider(TranscriptProvider):
         if self._client is None:
             from google import genai
 
-            self._client = genai.Client(api_key=self.ctx.settings.gemini_api_key)
+            self._client = genai.Client(api_key=_api_key(self.ctx))
         return self._client
 
     async def start(self) -> None:
@@ -512,8 +532,14 @@ class GeminiTextTranslateProvider(TranscriptProvider):
                     await asyncio.sleep(min(max(delay, 3.0), 120.0))
 
     async def _translate_one(self, client, types, system: str, payload: str) -> None:
+        vendor = _vendor_ctx(self.ctx)
+        model = (
+            self.ctx.model_override
+            or (vendor.translate_model if vendor is not None and vendor.translate_model else "")
+            or self.ctx.settings.gemini_text_model
+        )
         stream = await client.aio.models.generate_content_stream(
-            model=self.ctx.settings.gemini_text_model,
+            model=model,
             contents=payload,
             config=types.GenerateContentConfig(
                 system_instruction=system,

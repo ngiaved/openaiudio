@@ -40,6 +40,13 @@ def session_out(store: Store, session) -> dict:
         "created_at": session.created_at,
         "on_air": session.on_air(),
         "ingesting": session.ingesting,
+        "vendor_id": session.vendor_id,
+        "fallback_vendor_id": session.fallback_vendor_id,
+        "stt_model": session.stt_model,
+        "translate_model": session.translate_model,
+        "session_out_active_vendors": {
+            lang: t.active_vendor_id for lang, t in session.targets.items()
+        },
         "glossary": session.glossary,
         "languages": langs,
         "audience_total": store.audience_total(session.id),
@@ -102,6 +109,13 @@ def build_sessions_router(store: Store) -> list[APIRouter]:
             media_type=media,
             headers={"Content-Disposition": f'attachment; filename="{filename}"'},
         )
+
+    @router.post("/sessions/{session_id}/switch")
+    async def switch_vendors(session_id: str) -> dict:
+        session = await store.switch_vendors(session_id)
+        if session is None:
+            raise HTTPException(status_code=404, detail="sesión no encontrada (o sin vendor fallback)")
+        return session_out(store, session)
 
     @ws_router.websocket("/ws/ingest/{session_id}")
     async def ingest(ws: WebSocket, session_id: str) -> None:
