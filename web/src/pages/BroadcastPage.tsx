@@ -10,14 +10,17 @@ import {
   deleteSession,
   getSession,
   getSessions,
+  getVendors,
   ingestWsUrl,
   LANG_NAMES,
+  switchVendors,
   type LanguageInfo,
   type ProviderKind,
   type SessionInfo,
   type TranslationMode,
+  type VendorInfo,
 } from "@/lib/api";
-import { captureMic, resampleTo16k, type CaptureHandle } from "@/lib/audio";
+import { captureFile, captureMic, captureSystemAudio, listAudioDevices, resampleTo16k, type AudioDevice, type CaptureHandle } from "@/lib/audio";
 import { cn } from "@/lib/utils";
 
 const ALL_TARGETS = ["es", "en", "pt", "fr", "de"];
@@ -26,11 +29,16 @@ export function BroadcastPage() {
   const [picked, setPicked] = useState<string>("");
   const [existing, setExisting] = useState<SessionInfo[]>([]);
   const [session, setSession] = useState<SessionInfo | null>(null);
+  const [vendors, setVendors] = useState<VendorInfo[]>([]);
 
   const refresh = useCallback(async () => {
     try {
       const data = await getSessions();
       setExisting(data.sessions);
+    } catch {}
+    try {
+      const vd = await getVendors();
+      setVendors(vd.vendors.filter((v) => v.enabled || v.builtin));
     } catch {}
   }, []);
 
@@ -56,6 +64,7 @@ export function BroadcastPage() {
           onJoin={(s) => setSession(s)}
           picked={picked}
           setPicked={setPicked}
+          vendors={vendors}
         />
         <TransmitCard session={session} onClose={() => setSession(null)} onDelete={async (id) => { await deleteSession(id); setSession(null); refresh(); }} />
       </main>
@@ -69,12 +78,14 @@ function CreateCard({
   onJoin,
   picked,
   setPicked,
+  vendors,
 }: {
   existing: SessionInfo[];
   onCreated: (s: SessionInfo) => void;
   onJoin: (s: SessionInfo) => void;
   picked: string;
   setPicked: (id: string) => void;
+  vendors: VendorInfo[];
 }) {
   const [title, setTitle] = useState("");
   const [stage, setStage] = useState("");
@@ -82,6 +93,8 @@ function CreateCard({
   const [targets, setTargets] = useState<string[]>(["es"]);
   const [provider, setProvider] = useState<"" | ProviderKind>("");
   const [mode, setMode] = useState<"" | TranslationMode>("");
+  const [vendorId, setVendorId] = useState<string>("");
+  const [fallbackId, setFallbackId] = useState<string>("");
   const [err, setErr] = useState<string | null>(null);
 
   const toggleTarget = (t: string) =>
@@ -98,6 +111,8 @@ function CreateCard({
         targets: targets.map((l) => ({ lang: l, kind: "translate" as const })),
         provider: provider || null,
         translation_mode: mode || null,
+        vendor_id: vendorId || null,
+        fallback_vendor_id: fallbackId || null,
       });
       onCreated(s);
     } catch (e) {
@@ -174,6 +189,27 @@ function CreateCard({
           </div>
         </div>
 
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <Label>Vendor primario</Label>
+            <Select value={vendorId} onChange={(e) => setVendorId(e.target.value)}>
+              <option value="">(default)</option>
+              {vendors.map((v) => (
+                <option key={v.id} value={v.id} disabled={!v.enabled}>{v.name}{v.enabled ? "" : " ✕"}</option>
+              ))}
+            </Select>
+          </div>
+          <div>
+            <Label>Vendor fallback</Label>
+            <Select value={fallbackId} onChange={(e) => setFallbackId(e.target.value)}>
+              <option value="">(sin fallback)</option>
+              {vendors.map((v) => (
+                <option key={v.id} value={v.id} disabled={!v.enabled || v.id === vendorId}>{v.name}</option>
+              ))}
+            </Select>
+          </div>
+        </div>
+
         {err && <p className="mt-3 text-sm text-red-400">{err}</p>}
 
         <Button variant="primary" className="mt-4 w-full" onClick={onCreate}>
@@ -208,15 +244,28 @@ function TransmitCard({ session, onClose, onDelete }: {
   const [meter, setMeter] = useState(0);
   const [langs, setLangs] = useState<LanguageInfo[]>([]);
   const [micErr, setMicErr] = useState<string | null>(null);
+  const [source, setSource] = useState<"mic" | "system" | "file">("mic");
+  const [deviceId, setDeviceId] = useState<string>("");
+  const [devices, setDevices] = useState<AudioDevice[]>([]);
+  const [activeVendors, setActiveVendors] = useState<Record<string, string>>({});
 
   const wsRef = useRef<WebSocket | null>(null);
   const capRef = useRef<CaptureHandle | null>(null);
+  const fileRef = useRef<HTMLInputElement | null>(null);
   const startedRef = useRef(0);
   const bytesRef = useRef(0);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const helloRef = useRef(false); // recibimos "hello" del backend (handshake ok)
+  const stoppingRef = useRef(false); // el cierre lo pidió el usuario (no es error)
+
+  useEffect(() => {
+    listAudioDevices().then(setDevices).catch(() => {});
+  }, []);
 
   const stop = useCallback(() => {
+    stoppingRef.current = true;
+    helloRef.current = false;
     if (wsRef.current?.readyState === WebSocket.OPEN) {
       try { wsRef.current.send(JSON.stringify({ type: "control", cmd: "stop" })); } catch {}
     }
@@ -245,6 +294,7 @@ function TransmitCard({ session, onClose, onDelete }: {
       try {
         const s = await getSession(session.id);
         setLsFromSession(s);
+        setActiveVendors(s.session_out_active_vendors ?? {});
       } catch {}
     }, 2500);
     return () => {
@@ -256,30 +306,34 @@ function TransmitCard({ session, onClose, onDelete }: {
     setLangs(s.languages);
   }
 
-  const startStream = async () => {
+  const runCapture = async (cap: CaptureHandle) => {
     if (!session) return;
-    setMicErr(null);
-    const cap = await captureMic().catch((e) => {
-      setMicErr((e as Error).message);
-      return null;
-    });
-    if (!cap) return;
-    capRef.current = cap;
-
-    const ws = new WebSocket(ingestWsUrl(session.id, cap.sampleRate));
+    stoppingRef.current = false;
+    helloRef.current = false;
+    const ws = new WebSocket(ingestWsUrl(session!.id, cap.sampleRate));
     ws.binaryType = "arraybuffer";
     wsRef.current = ws;
-    ws.onopen = () => ws.send(JSON.stringify({ engine: "browser", sampleRate: cap.sampleRate }));
+    ws.onopen = () => ws.send(JSON.stringify({ engine: "browser", sampleRate: cap.sampleRate, source }));
     ws.onmessage = (ev) => {
       const msg = JSON.parse(ev.data);
       if (msg.type === "hello") {
+        helloRef.current = true;
         setOnAir(true);
         setWsState("open");
         startedRef.current = Date.now();
         timerRef.current = setInterval(() => setElapsed((Date.now() - startedRef.current) / 1000), 500);
       }
     };
-    ws.onclose = () => setWsState("closed");
+    ws.onclose = (ev: CloseEvent) => {
+      setWsState("closed");
+      if (helloRef.current || stoppingRef.current) return;
+      const reason =
+        ev.reason ||
+        (ev.code === 4409
+          ? "ya hay una señal de audio activa en esta sesión (¿la estás transmitiendo desde otra ventana/dispositivo?)"
+          : `código ${ev.code}`);
+      setMicErr(`No se pudo conectar la transmisión: ${reason}`);
+    };
     ws.onerror = () => setWsState("error");
 
     cap.setHandler((i16, rms) => {
@@ -291,6 +345,51 @@ function TransmitCard({ session, onClose, onDelete }: {
         setBytes(bytesRef.current);
       }
     });
+  };
+
+  const startStream = async () => {
+    if (!session) return;
+    setMicErr(null);
+    stoppingRef.current = false;
+    helloRef.current = false;
+    let cap: CaptureHandle | null = null;
+    try {
+      if (source === "system") {
+        cap = await captureSystemAudio();
+      } else if (source === "mic") {
+        cap = await captureMic(deviceId || undefined);
+      } else {
+        throw new Error("elegí un archivo de audio primero");
+      }
+    } catch (e) {
+      setMicErr((e as Error).message);
+      return;
+    }
+    capRef.current = cap;
+    await runCapture(cap);
+  };
+
+  const onFile = async (f: File | null) => {
+    if (!f) return;
+    setMicErr(null);
+    try {
+      const cap = await captureFile(f);
+      capRef.current = cap;
+      await runCapture(cap);
+    } catch (e) {
+      setMicErr((e as Error).message);
+    }
+  };
+
+  const onSwitch = async () => {
+    if (!session?.fallback_vendor_id) return;
+    try {
+      const s = await switchVendors(session.id);
+      setLsFromSession(s);
+      setActiveVendors(s.session_out_active_vendors ?? {});
+    } catch (e) {
+      setMicErr((e as Error).message);
+    }
   };
 
   const stopStream = () => stop();
@@ -340,25 +439,68 @@ function TransmitCard({ session, onClose, onDelete }: {
                 {onAir ? <><MicOff /> Detener</> : <><Mic /> Iniciar micrófono</>}
               </Button>
               <Button variant="ghost" onClick={onClose}>Desconectar sesión</Button>
+              {session?.fallback_vendor_id && (
+                <Button variant="ghost" onClick={onSwitch} title="Conmutar manualmente primario ↔ fallback">
+                  Cambiar vendor (fallback)
+                </Button>
+              )}
             </div>
 
-            {micErr && <p className="mt-3 text-sm text-red-400">Micrófono: {micErr}</p>}
+            <div className="mt-4 grid grid-cols-1 gap-3 rounded-xl border border-edge bg-ink/40 p-3 sm:grid-cols-2">
+              <div>
+                <Label>Fuente de audio</Label>
+                <Select value={source} onChange={(e) => setSource(e.target.value as "mic" | "system" | "file")}>
+                  <option value="mic">Micrófono</option>
+                  <option value="system">Audio del sistema (pantalla/tab)</option>
+                  <option value="file">Archivo local</option>
+                </Select>
+              </div>
+              {source === "mic" && (
+                <div>
+                  <Label>Dispositivo</Label>
+                  <Select value={deviceId} onChange={(e) => setDeviceId(e.target.value)} disabled={devices.length === 0}>
+                    <option value="">Default</option>
+                    {devices.map((d) => (
+                      <option key={d.id} value={d.id}>{d.label}</option>
+                    ))}
+                  </Select>
+                </div>
+              )}
+              {source === "file" && (
+                <div>
+                  <Label>Archivo</Label>
+                  <input ref={fileRef} type="file" accept="audio/*,.wav" className="block w-full text-sm text-mute file:mr-3 file:rounded-lg file:border-0 file:bg-panel-2 file:px-3 file:py-2 file:text-sm file:text-slate-100"
+                    onChange={(e) => e.target.files && onFile(e.target.files[0])} />
+                </div>
+              )}
+            </div>
+            {source !== "file" && (
+              <p className="mt-1 hidden text-xs text-mute">Elegí micrófono o sistema y pulsá iniciar; el audio se resamplea a 16 kHz PCM mono y se envía por WebSocket.</p>
+            )}
+
+            {micErr && <p className="mt-3 text-sm text-red-400">Audio: {micErr}</p>}
 
             <div className="mt-5 space-y-1.5 rounded-xl border border-edge bg-ink/40 p-3 font-mono text-xs">
               {langs.map((l) => (
                 <div key={l.lang} className="flex items-start gap-2">
                   {/^(live|warming)/.test(l.state) ? (
-                    <XCircle className="mt-0.5 size-3 text-emerald-400" />
+                    <CheckCircle2 className="mt-0.5 size-3 text-emerald-400" />
                   ) : l.state === "error" ? (
                     <XCircle className="mt-0.5 size-3 text-red-400" />
                   ) : (
-                    <CheckCircle2 className="mt-0.5 size-3 text-amber-400" />
+                    <XCircle className="mt-0.5 size-3 text-amber-400" />
                   )}
                   <div className="min-w-0">
                     <span className={cn("font-semibold", l.state === "live" ? "text-emerald-400" : "text-slate-300")}>
                       {LANG_NAMES[l.lang] ?? l.lang} · {l.kind} · {l.via}
                     </span>
                     <span className="ml-2 text-mute">[{l.state}]</span>
+                    {activeVendors[l.lang] && (
+                      <span className="ml-2 rounded bg-white/5 px-1 py-0 text-[10px] text-neon">{activeVendors[l.lang]}</span>
+                    )}
+                    {l.error && (
+                      <span className="ml-2 text-[10px] text-red-400">⚠ {l.error}</span>
+                    )}
                     <div className="truncate text-slate-500">▸ {l.partial || l.preview || "…"}</div>
                   </div>
                 </div>
@@ -367,8 +509,9 @@ function TransmitCard({ session, onClose, onDelete }: {
             </div>
 
             <p className="mt-4 text-xs leading-relaxed text-mute">
-              El navegador captura el micrófono, lo resamplea a 16 kHz PCM mono y lo envía por WebSocket.
-              Abrí la <Link to="/" className="text-neon underline">vista de audiencia</Link> en otro dispositivo para ver los subtítulos.
+              El navegador captura la fuente elegida (micrófono, audio de sistema o archivo), lo resamplea a 16 kHz
+              PCM mono y lo envía por WebSocket. Abrí la <Link to="/" className="text-neon underline">vista de audiencia</Link> en
+              otro dispositivo para ver los subtítulos.
             </p>
           </>
         )}

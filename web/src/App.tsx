@@ -2,6 +2,7 @@ import { Route, Routes } from "react-router-dom";
 import { AudiencePage } from "@/pages/AudiencePage";
 import { BroadcastPage } from "@/pages/BroadcastPage";
 import { AdminPage } from "@/pages/AdminPage";
+import { VendorsPage } from "@/pages/VendorsPage";
 
 export default function App() {
   return (
@@ -10,6 +11,7 @@ export default function App() {
         <Route path="/" element={<AudiencePage />} />
         <Route path="/broadcast" element={<BroadcastPage />} />
         <Route path="/admin" element={<AdminPage />} />
+        <Route path="/vendors" element={<VendorsPage />} />
         <Route path="/:sid" element={<AudiencePage />} />
         <Route path="/:sid/:lang" element={<AudiencePage />} />
       </Routes>

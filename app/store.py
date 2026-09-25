@@ -21,10 +21,12 @@ from app.audio import AUDIO_RATE
 from app.captions import CaptionBuffer, export_captions, feed_text
 from app.config import Settings, default_targets
 from app.models import CreateSessionRequest, GlossaryEntry, TargetSpec, slugify
+from app.vendors import VendorStore
 
 log = logging.getLogger("openaiudio.store")
 
 SWEEP_INTERVAL = 30.0
+START_ERROR_COOLDOWN = 30.0  # segundos sin reintentar tras un error de arranque permanente
 
 
 @dataclass
@@ -40,6 +42,11 @@ class Target:
     uses_text: bool = False
     stash: list[str] = field(default_factory=list)  # texto pendiente si el provider aún arranca
     _starting: bool = False
+    active_vendor_id: str | None = None  # vendor en uso (primario o fallback)
+    switched_fallback: bool = False
+    cooldown_until: float = 0.0  # no reintentar arranque antes de esta marca de tiempo
+    _fallback_pending: bool = False  # hubo switch de fallback en este ciclo de error
+    error: str = ""  # último mensaje de error (para el panel de producción)
 
     def __post_init__(self) -> None:
         self.buffer = CaptionBuffer(lang=self.lang, kind=self.kind)
@@ -58,6 +65,12 @@ class Session:
     last_audio_at: float = 0.0
     ingesting: bool = False
     targets: dict[str, Target] = field(default_factory=dict)
+    vendor_id: str = "mock"  # vendor primario (provee STT + traducción)
+    fallback_vendor_id: str | None = None
+    stt_model: str = ""  # override de modelo STT para el vendor primario
+    translate_model: str = ""
+    fallback_stt_model: str = ""
+    fallback_translate_model: str = ""
 
     def language_list(self) -> list[str]:
         return list(self.targets.keys())
@@ -75,27 +88,55 @@ class AudienceConn:
     __hash__ = object.__hash__
 
 
-def provider_shape(provider: str, kind: str, via: str) -> tuple[bool, bool]:
-    """(usa_audio, usa_texto) para (provider, rol, vía) dados."""
-    if provider == "local":
-        return (True, False) if kind == "original" else (False, True)
+def provider_shape(kind: str, via: str) -> tuple[bool, bool]:
+    """(usa_audio, usa_texto) para (rol, vía) dados."""
     if kind == "original":
         return True, False
     return (True, False) if via == "audio" else (False, True)
 
 
-def default_via(provider: str, mode: str) -> str:
-    """Decide la vía de traducción según el modo configurado (audio | text | auto).
+def default_via(vendor, mode: str) -> str:
+    """Vía de traducción según el modo y las capacidades del vendor.
 
-    La vía por texto es robusta y económica (generate_content sobre segmentos
-    finales); es el default para Gemini. La vía por audio (Live streaming)
-    queda como opción experimental con `audio` explícito o con el mock.
+    La vía por texto es robusta y económica; es la default para todo vendor con
+    soporte de traducción de texto. `audio` (Live streaming) queda como opción
+    explícita solo para vendors con vía live (gemini/mock), y es lo que el mock
+    usa (su traducción solo emite por la vía de audio).
     """
-    if mode == "audio":
-        return "audio"
+    protocol = vendor.protocol if vendor is not None else "mock"
     if mode == "text":
         return "text"
-    return "text" if provider in ("gemini", "local") else "audio"
+    if mode == "audio":
+        return "audio" if protocol in ("gemini", "mock") else "text"
+    # auto
+    if protocol == "mock":
+        return "audio"
+    return "text"
+
+
+def resolve_primary_vendor(vendors: VendorStore, provider_or_vendor: str) -> tuple[str, str]:
+    """Resuelve el vendor efectivo partiendo de un id de vendor o un provider legacy.
+
+    Devuelve (vendor_id, protocolo). Prefiere el vendor si está habilitado; si no,
+    cae a gemini (si tiene key) o mock (demo offline).
+    """
+    wanted = provider_or_vendor.strip().lower()
+    legacy_map = {"auto": "", "gemini": "gemini", "local": "local", "mock": "mock"}
+    v = vendors.enabled(wanted)
+    if v is not None:
+        return v.id, v.protocol
+    for cand in (legacy_map.get(wanted) or [],):
+        if not cand:
+            continue
+        v = vendors.enabled(cand)
+        if v is not None:
+            return v.id, v.protocol
+    # fallback determinista: gemini si hay key, si no mock
+    for cand in ("gemini", "mock"):
+        v = vendors.enabled(cand)
+        if v is not None:
+            return v.id, v.protocol
+    return "mock", "mock"
 
 
 class Store:
@@ -105,6 +146,12 @@ class Store:
         self._audience: dict[tuple[str, str], set[AudienceConn]] = {}
         self._active_providers = 0
         self._sweeper: asyncio.Task | None = None
+        env = dict(os.environ)
+        if settings.enabled_vendors:
+            env["ENABLED_VENDORS"] = settings.enabled_vendors
+        if settings.gemini_api_key and settings.gemini_api_key != env.get("GEMINI_API_KEY", ""):
+            env["GEMINI_API_KEY"] = settings.gemini_api_key
+        self.vendors = VendorStore(settings.data_dir, env=env)
         if settings.obs_out_dir:
             os.makedirs(settings.obs_out_dir, exist_ok=True)
 
@@ -115,8 +162,15 @@ class Store:
         sid = req.session_id or (slugify(req.title) + "-" + secrets.token_hex(2))
         while sid in self.sessions:
             sid = slugify(req.title) + "-" + secrets.token_hex(2)
-        provider = req.provider or self.settings.effective_provider
+        wanted = req.vendor_id or req.provider or self.settings.effective_provider
+        vendor_id, protocol = resolve_primary_vendor(self.vendors, wanted)
+        fallback_id = None
+        if req.fallback_vendor_id:
+            fb = self.vendors.enabled(req.fallback_vendor_id)
+            if fb is not None and fb.id != vendor_id:
+                fallback_id = fb.id
         mode = req.translation_mode or self.settings.translation_mode
+        primary = self.vendors.get(vendor_id)
         targets: list[TargetSpec] = req.targets or [
             TargetSpec(lang=ln, kind="translate")
             for ln in sorted({d["lang"] for d in default_targets(req.original_language)})
@@ -126,25 +180,32 @@ class Store:
             title=req.title.strip(),
             stage=req.stage,
             original_language=req.original_language,
-            provider=provider,
+            provider=protocol,
             translation_mode=mode,
             glossary=[g.model_dump() for g in req.glossary],
+            vendor_id=vendor_id,
+            fallback_vendor_id=fallback_id,
+            stt_model=req.stt_model or "",
+            translate_model=req.translate_model or "",
+            fallback_stt_model=req.fallback_stt_model or "",
+            fallback_translate_model=req.fallback_translate_model or "",
         )
         by_lang = {t.lang: t for t in targets}
         by_lang.setdefault(req.original_language, TargetSpec(lang=req.original_language, kind="original"))
         for lang, spec in by_lang.items():
             kind = "original" if lang == req.original_language else "translate"
-            via = spec.via or default_via(provider, mode)
-            t = Target(lang=lang, kind=kind, via="audio" if kind == "original" else via)
-            t.uses_audio, t.uses_text = provider_shape(provider, kind, t.via)
+            via = spec.via or ("audio" if kind == "original" else default_via(primary, mode))
+            t = Target(lang=lang, kind=kind, via="audio" if kind == "original" else via, active_vendor_id=vendor_id)
+            t.uses_audio, t.uses_text = provider_shape(kind, t.via)
             session.targets[lang] = t
         self.sessions[sid] = session
         log.info(
-            "sesión %s creada (original=%s, targets=%s, provider=%s, traducción=%s)",
+            "sesión %s creada (original=%s, targets=%s, vendor=%s%s, traducción=%s)",
             sid,
             session.original_language,
             sorted(by_lang),
-            provider,
+            vendor_id,
+            f"/fallback {fallback_id}" if fallback_id else "",
             mode,
         )
         return session
@@ -174,24 +235,47 @@ class Store:
 
     # -------------------------------------------------------------- providers
     def _make_provider(self, session: Session, target: Target):
+        vendor = self.vendors.get(target.active_vendor_id or session.vendor_id)
+        use_fallback = target.active_vendor_id != session.vendor_id
+        stt_override = (session.fallback_stt_model if use_fallback else session.stt_model) or ""
+        txt_override = (session.fallback_translate_model if use_fallback else session.translate_model) or ""
+        if vendor is None or not vendor.enabled:
+            raise ValueError(f"vendor '{target.active_vendor_id or session.vendor_id}' no está disponible")
+        from app.providers import anthropic as anthropic_mod
         from app.providers import gemini as gemini_mod
         from app.providers import local as local_mod
         from app.providers import mock as mock_mod
+        from app.providers import openai_compat as openai_mod
 
-        ctx = self._ctx(session, target)
-        if session.provider == "mock":
+        ctx = self._ctx(session, target, vendor)
+        ctx.model_override = stt_override if target.kind == "original" else txt_override
+        if vendor.protocol == "mock":
             return mock_mod.MockProvider(ctx)
-        if session.provider == "local":
+        if vendor.protocol == "local":
             if target.kind == "original":
                 return local_mod.LocalWhisperProvider(ctx)
             return local_mod.OllamaTranslateProvider(ctx)
+        if vendor.protocol == "gemini":
+            if target.kind == "original":
+                return gemini_mod.GeminiChunkSttProvider(ctx)
+            if target.via == "audio":
+                return gemini_mod.GeminiProvider(ctx)
+            return gemini_mod.GeminiTextTranslateProvider(ctx)
+        if vendor.protocol == "anthropic":
+            if target.kind == "original":
+                raise ValueError("el vendor anthropic no soporta STT (solo traducción por texto)")
+            return anthropic_mod.AnthropicTextTranslateProvider(ctx)
+        # openai / azure / custom (todo OpenAI-compatible)
         if target.kind == "original":
-            return gemini_mod.GeminiChunkSttProvider(ctx)
-        if target.via == "audio":
-            return gemini_mod.GeminiProvider(ctx)
-        return gemini_mod.GeminiTextTranslateProvider(ctx)
+            stt_mode = vendor.stt_mode or "none"
+            if stt_mode == "whisper":
+                return openai_mod.OpenAIWhisperSttProvider(ctx)
+            if stt_mode in ("inline_audio", "windowed"):
+                return openai_mod.OpenAIInlineAudioSttProvider(ctx)
+            raise ValueError(f"el vendor '{vendor.id}' no soporta STT (stt_mode={stt_mode})")
+        return openai_mod.OpenAITextTranslateProvider(ctx)
 
-    def _ctx(self, session: Session, target: Target):
+    def _ctx(self, session: Session, target: Target, vendor=None):
         from app.providers.base import TargetContext
 
         return TargetContext(
@@ -201,6 +285,7 @@ class Store:
             original_language=session.original_language,
             glossary=session.glossary,
             settings=self.settings,
+            vendor=vendor,
             emit=lambda kind, text: self.push_caption(session.id, target.lang, kind, text),
             on_state=lambda state: self._set_state(session.id, target.lang, state),
             on_error=lambda msg: self._target_error(session.id, target.lang, msg),
@@ -213,20 +298,52 @@ class Store:
             target.state = "queued"
             self._set_state(session.id, target.lang, "queued")
             return
-        target.provider = self._make_provider(session, target)
+        if target._fallback_pending:
+            # el switch a fallback pide arranque inmediato: consumimos el flag y
+            # limpiamos el cooldown que dejó el error del vendor primario.
+            target._fallback_pending = False
+            target.cooldown_until = 0.0
+        if time.time() < target.cooldown_until:
+            return  # error de arranque permanente reciente: no hacer espiral de reintentos
+        target.provider = None
         self._active_providers += 1
-        log.info("iniciando provider %s para %s/%s (activos=%d)", session.provider, session.id, target.lang, self._active_providers)
         try:
+            target.provider = self._make_provider(session, target)
+            log.info(
+                "iniciando provider %s/%s para %s/%s (activos=%d)",
+                session.id,
+                target.lang,
+                target.active_vendor_id or session.vendor_id,
+                type(target.provider).__name__,
+                self._active_providers,
+            )
             await target.provider.start()
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
             log.exception("provider %s/%s lanzó excepción", session.id, target.lang)
-            target.provider.state = "error"
-        if target.provider.state == "error":
+            if target.provider is not None:
+                target.provider.state = "error"
+            else:
+                self._target_error(session.id, target.lang, str(exc) or "no se pudo crear el provider")
+        if target.provider is not None and target.provider.state == "error":
             self._active_providers = max(0, self._active_providers - 1)
             target.provider = None
             target._starting = False
+            if not target._fallback_pending:
+                # hubo switch a fallback → el próximo arranque no espera cooldown
+                target.cooldown_until = time.time() + START_ERROR_COOLDOWN
             await self._promote_queued()
             return
+        if target.provider is None:
+            self._active_providers = max(0, self._active_providers - 1)
+            target._starting = False
+            target.cooldown_until = time.time() + START_ERROR_COOLDOWN
+            await self._promote_queued()
+            return
+        target._starting = False
+        if target.stash:
+            staged, target.stash = target.stash, []
+            for seg in staged:
+                asyncio.create_task(self._safe_on_text(target, seg))
         target._starting = False
         if target.stash:
             staged, target.stash = target.stash, []
@@ -343,18 +460,65 @@ class Store:
         session = self.get(session_id)
         if session and lang in session.targets:
             session.targets[lang].state = state
+            if state in ("live", "warming"):
+                session.targets[lang].error = ""  # al recuperar, limpiamos el error previo
         self._broadcast(session_id, lang, {"type": "state", "lang": lang, "state": state})
 
     def _target_error(self, session_id: str, lang: str, message: str) -> None:
         session = self.get(session_id)
         if session and lang in session.targets:
             session.targets[lang].errors += 1
+            session.targets[lang].error = message
         self._broadcast(
             session_id,
             lang,
             {"type": "state", "lang": lang, "state": "error", "error": message},
         )
         log.warning("%s/%s: %s", session_id, lang, message)
+        if session:
+            self._try_fallback(session, session.targets[lang], message)
+
+    _TRANSIENT = ("rate-limit", "cuota", "429", "503", "timeout", "resource_exhausted", "502", "500")
+    _FATAL = (
+        "401", "403", "404", "invalid_api_key", "authentication", "permission",
+        "model not found", "no such model", "model does not exist", "model_not_found",
+        "not found", "unauthorized",
+    )
+
+    def _try_fallback(self, session: Session, target: Target, message: str) -> None:
+        fb = session.fallback_vendor_id
+        if not fb or target.switched_fallback or target.active_vendor_id == fb:
+            return
+        low = message.lower()
+        if any(k in low for k in self._TRANSIENT):
+            return
+        if not any(k in low for k in self._FATAL):
+            return
+        target.active_vendor_id = fb
+        target.switched_fallback = True
+        target._fallback_pending = True
+        log.info("sesión %s/%s → switch a vendor fallback %s", session.id, target.lang, fb)
+        self._broadcast(
+            session.id,
+            target.lang,
+            {"type": "state", "lang": target.lang, "state": "error", "error": f"fallback a vendor {fb}", "fallback_vendor": fb},
+        )
+
+    async def switch_vendors(self, session_id: str) -> Session | None:
+        """Permuta manualmente vendor primario ⇄ fallback para todos los targets."""
+        session = self.get(session_id)
+        if session is None or not session.fallback_vendor_id:
+            return None
+        fb = session.fallback_vendor_id
+        for t in session.targets.values():
+            t.active_vendor_id = fb if t.active_vendor_id == session.vendor_id else session.vendor_id
+            t.switched_fallback = True
+            t._fallback_pending = False
+            t.cooldown_until = 0.0  # el nuevo vendor arranca de inmediato
+            await self._stop_target(t)
+            t.state = "idle"
+        log.info("switch manual de vendor en sesión %s (ahora %s)", session_id, fb)
+        return session
 
     def _write_obs_feed(self, session: Session, lang: str) -> None:
         out = self.settings.obs_out_dir
@@ -489,6 +653,7 @@ class Store:
                         "via": t.via,
                         "state": t.state,
                         "errors": t.errors,
+                        "error": t.error,
                         "audience": self.audience_count(session.id, lang),
                         "partial": t.buffer.partial[-96:],
                         "segments": len(t.buffer.segments),

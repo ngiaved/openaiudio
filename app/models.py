@@ -42,11 +42,34 @@ class CreateSessionRequest(BaseModel):
     provider: ProviderKind | None = None
     translation_mode: Literal["audio", "text", "auto"] | None = None
     glossary: list[GlossaryEntry] = []
+    vendor_id: str | None = Field(default=None, max_length=64, description="Vendor primario (id del registro)")
+    fallback_vendor_id: str | None = Field(default=None, max_length=64, description="Vendor de respaldo")
+    stt_model: str | None = Field(default=None, max_length=120, description="Override de modelo STT para el vendor primario")
+    translate_model: str | None = Field(default=None, max_length=120, description="Override de modelo de traducción (vendor primario)")
+    fallback_stt_model: str | None = Field(default=None, max_length=120)
+    fallback_translate_model: str | None = Field(default=None, max_length=120)
 
     @field_validator("original_language")
     @classmethod
     def _norm_orig(cls, v: str) -> str:
         return v.strip().lower()
+
+
+class VendorSpec(BaseModel):
+    """Create/update de un vendor custom (o overrides de un built-in)."""
+    id: str | None = Field(default=None, max_length=64)
+    name: str = Field(default="", max_length=80)
+    protocol: str = "openai"
+    base_url: str = Field(default="", max_length=300)
+    api_key: str = Field(default="", max_length=400)
+    supports_stt: bool = True
+    supports_translate: bool = True
+    stt_mode: Literal["whisper", "inline_audio", "windowed", "none"] = "whisper"
+    stt_model: str = Field(default="", max_length=120)
+    translate_model: str = Field(default="", max_length=120)
+    live_model: str = Field(default="", max_length=120)
+    enabled: bool = True
+    azure_endpoint: str = Field(default="", max_length=300)
 
 
 class SetGlossaryRequest(BaseModel):

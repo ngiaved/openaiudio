@@ -25,6 +25,10 @@ Made for [Nerdearla](https://nerdear.la), Apache-2.0.
   for OBS/vMix, and SRT/VTT/TXT export from the caption buffers.
 - **Offline demo mode** — with no API key it runs a deterministic `mock`
   provider so demos and CI work anywhere (used by the test suite).
+- **Vendors** — primary and fallback models are selectable per session from the
+  web UI (`/vendors` page if you want to manage them): Gemini, xAI, OpenAI,
+  Anthropic, Groq, Mistral, DeepSeek, Together, OpenRouter, Azure OpenAI
+  (OpenAI-compatible), plus fully-local Whisper + Ollama.
 
 ## Why these decisions
 
@@ -84,8 +88,10 @@ cd web && npm install && npm run build && cd ..
 Then open:
 
 - `http://localhost:8000` — audience view (pick session + language)
-- `http://localhost:8000/broadcast` — create a session and start ingesting audio
-- `http://localhost:8000/admin` — production panel
+- `http://localhost:8000/broadcast` — create a session, pick a cloud or local
+  vendor and start ingesting audio
+- `http://localhost:8000/vendors` — manage model vendors (keys stay local)
+- `http://localhost:8000/admin` — production panel (shows live provider errors)
 - `http://localhost:8000/docs` — OpenAPI docs
 
 ## How to test
@@ -95,8 +101,9 @@ Then open:
 .venv/bin/pytest tests/        # end-to-end pipeline with the mock provider
 ```
 
-- **Local automated suite** — 19 tests cover the caption buffers, ingest/audience
-  WS protocol, the admin/session API and the full e2e flow, all without network.
+- **Local automated suite** — 36 tests cover the caption buffers, ingest/audience
+  WS protocol, the admin/session/vendor APIs, the primary/fallback switching and
+  cooldown logic, and the full e2e flow, all without network.
 - **Frontend** — `cd web && npm run dev` runs Vite on :5173 proxying the backend.
 - **Live smoke test (real Gemini)** — with a key in `.env` and `PROVIDER=gemini`:
   1. Start the server and create a session from `/broadcast`.
@@ -109,14 +116,18 @@ Then open:
 
 ## Architecture
 
-- `app/store.py` — orchestrator: provider budgets, states, idle sweeping.
-- `app/providers/` — `gemini` (chunk STT + text/live translation), `local`
-  (whisper + Ollama), `mock`.
+- `app/store.py` — orchestrator: vendor resolution (primary/fallback per
+  session), provider budgets, states, idle sweeping.
+- `app/vendors.py` — the vendor registry loaded from the environment and the
+  `/vendors` page (persisted to `data/vendors.json`).
+- `app/providers/` — `gemini`, `openai_compat` (OpenAI/Anthropic/Groq/Kimi/
+  OpenRouter/…), `xai`, `local` (Whisper + Ollama), `mock`.
 - `app/captions.py` — per-language buffers and SRT/VTT/TXT export.
-- `app/routers/` — REST + WS for ingest, audience, feeds and admin.
+- `app/routers/` — REST + WS for ingest, audience, feeds, vendors and admin.
 
 Deeper walkthroughs: [ARCHITECTURE.md](docs/ARCHITECTURE.md),
-[DEPLOYMENT.md](docs/DEPLOYMENT.md).
+[DEPLOYMENT.md](docs/DEPLOYMENT.md), and a
+[local-only HOWTO](docs/LOCAL_WHISPER.md) (Whisper + Ollama on macOS/Linux/Windows).
 
 ## Configuration
 

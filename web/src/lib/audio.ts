@@ -1,4 +1,10 @@
-/* Captura del micrófono en el navegador → PCM16 16 kHz mono → bytes para el backend.
+/* Captura de audio en el navegador → PCM16 16 kHz mono → bytes para el backend.
+
+   Fuentes soportadas:
+     - micrófono (device elegido o default)
+     - audio del sistema (tab/capture de pantalla, vía getDisplayMedia)
+     - archivo local (wav/mp3/flac…, vía <audio> + MediaElementSource)
+
    (Resample lineal a 16 kHz desde la tasa nativa del AudioContext.) */
 
 import { TARGET_RATE } from "./api";
@@ -9,12 +15,64 @@ export interface CaptureHandle {
   close: () => void;
 }
 
-export async function captureMic(): Promise<CaptureHandle> {
+export interface AudioDevice {
+  id: string;
+  label: string;
+}
+
+export async function listAudioDevices(): Promise<AudioDevice[]> {
+  try {
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    return devices
+      .filter((d) => d.kind === "audioinput")
+      .map((d) => ({ id: d.deviceId, label: d.label || `Micrófono ${d.deviceId.slice(0, 4)}…` }));
+  } catch {
+    return [];
+  }
+}
+
+export async function captureMic(deviceId?: string): Promise<CaptureHandle> {
   const stream = await navigator.mediaDevices.getUserMedia({
-    audio: { channelCount: 1, echoCancellation: false, noiseSuppression: true },
+    audio: deviceId
+      ? { deviceId: { exact: deviceId }, channelCount: 1, echoCancellation: false, noiseSuppression: true }
+      : { channelCount: 1, echoCancellation: false, noiseSuppression: true },
   });
+  return captureStream(stream);
+}
+
+export async function captureSystemAudio(): Promise<CaptureHandle> {
+  const stream = await navigator.mediaDevices.getDisplayMedia({
+    audio: true,
+    video: true,
+  });
+  stream.getVideoTracks().forEach((t) => t.stop()); // necesitamos solo el audio
+  return captureStream(stream);
+}
+
+export function captureFile(file: File): Promise<CaptureHandle> {
+  const actx = new (window.AudioContext || (window as any).webkitAudioContext)();
+  const url = URL.createObjectURL(file);
+  const audio = document.createElement("audio");
+  audio.src = url;
+  audio.loop = true;
+  audio.autoplay = true;
+  const handle = wireProcessor(actx, actx.createMediaElementSource(audio), () => {
+    URL.revokeObjectURL(url);
+  });
+  audio.play().catch(() => {});
+  return new Promise((resolve) => {
+    audio.addEventListener("canplay", () => resolve(handle), { once: true });
+  });
+}
+
+function captureStream(stream: MediaStream): Promise<CaptureHandle> {
   const actx = new (window.AudioContext || (window as any).webkitAudioContext)();
   const source = actx.createMediaStreamSource(stream);
+  const stopter = () => stream.getTracks().forEach((t) => t.stop());
+  return Promise.resolve(wireProcessor(actx, source, stopter));
+}
+
+function wireProcessor(actx: AudioContext, source: AudioNode, onClose: () => void): CaptureHandle {
   const processor = actx.createScriptProcessor(4096, 1, 1);
   let handler: ((i16: Int16Array, rms: number) => void) | null = null;
 
@@ -35,13 +93,16 @@ export async function captureMic(): Promise<CaptureHandle> {
   source.connect(processor);
   processor.connect(actx.destination);
 
+  let closed = false;
   return {
     sampleRate: actx.sampleRate,
     setHandler: (h) => (handler = h),
     close: () => {
+      if (closed) return;
+      closed = true;
       processor.disconnect();
       source.disconnect();
-      stream.getTracks().forEach((t) => t.stop());
+      onClose();
       actx.close().catch(() => {});
     },
   };
