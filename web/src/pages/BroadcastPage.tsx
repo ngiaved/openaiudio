@@ -256,12 +256,16 @@ function TransmitCard({ session, onClose, onDelete }: {
   const bytesRef = useRef(0);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const helloRef = useRef(false); // recibimos "hello" del backend (handshake ok)
+  const stoppingRef = useRef(false); // el cierre lo pidió el usuario (no es error)
 
   useEffect(() => {
     listAudioDevices().then(setDevices).catch(() => {});
   }, []);
 
   const stop = useCallback(() => {
+    stoppingRef.current = true;
+    helloRef.current = false;
     if (wsRef.current?.readyState === WebSocket.OPEN) {
       try { wsRef.current.send(JSON.stringify({ type: "control", cmd: "stop" })); } catch {}
     }
@@ -303,6 +307,9 @@ function TransmitCard({ session, onClose, onDelete }: {
   }
 
   const runCapture = async (cap: CaptureHandle) => {
+    if (!session) return;
+    stoppingRef.current = false;
+    helloRef.current = false;
     const ws = new WebSocket(ingestWsUrl(session!.id, cap.sampleRate));
     ws.binaryType = "arraybuffer";
     wsRef.current = ws;
@@ -310,13 +317,23 @@ function TransmitCard({ session, onClose, onDelete }: {
     ws.onmessage = (ev) => {
       const msg = JSON.parse(ev.data);
       if (msg.type === "hello") {
+        helloRef.current = true;
         setOnAir(true);
         setWsState("open");
         startedRef.current = Date.now();
         timerRef.current = setInterval(() => setElapsed((Date.now() - startedRef.current) / 1000), 500);
       }
     };
-    ws.onclose = () => setWsState("closed");
+    ws.onclose = (ev: CloseEvent) => {
+      setWsState("closed");
+      if (helloRef.current || stoppingRef.current) return;
+      const reason =
+        ev.reason ||
+        (ev.code === 4409
+          ? "ya hay una señal de audio activa en esta sesión (¿la estás transmitiendo desde otra ventana/dispositivo?)"
+          : `código ${ev.code}`);
+      setMicErr(`No se pudo conectar la transmisión: ${reason}`);
+    };
     ws.onerror = () => setWsState("error");
 
     cap.setHandler((i16, rms) => {
@@ -333,6 +350,8 @@ function TransmitCard({ session, onClose, onDelete }: {
   const startStream = async () => {
     if (!session) return;
     setMicErr(null);
+    stoppingRef.current = false;
+    helloRef.current = false;
     let cap: CaptureHandle | null = null;
     try {
       if (source === "system") {
