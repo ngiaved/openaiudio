@@ -80,8 +80,20 @@ connections on port 8000.
 
 ## 6) Fully local mode
 
-Install Ollama with `gemma3:4b` (`ollama pull gemma3:4b`), `faster-whisper`,
-and set `PROVIDER=local`. Translation then runs via text through Gemma.
+Install Ollama with `gemma3:4b` (`ollama pull gemma3:4b`), `faster-whisper`
+(`pip install -e ".[local]"`), and set `PROVIDER=local`. Translation then runs
+via text through Gemma — see the platform-by-platform guide in
+[LOCAL_WHISPER.md](LOCAL_WHISPER.md) (macOS/Linux/Windows, optional CUDA).
+
+## 7) Cloud vendors (optional, no lock-in)
+
+Cloud models are interchangeable per session. From `/vendors` you can enable
+built-in vendors (xAI, OpenAI, Anthropic, Groq, Mistral, DeepSeek, Together,
+OpenRouter, Azure OpenAI) by adding their key to `.env` (or a custom vendor
+from the page). In `/broadcast` pick a primary and a fallback vendor per
+session; the fallback kicks in automatically on fatal errors. Keys never leave
+the server (no key is sent to the browser; the web UI only receives a masked
+`name_id`/`api_key_masked`).
 
 ## Event readiness checklist
 
