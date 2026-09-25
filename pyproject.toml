@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "openaiudio"
+version = "0.1.0"
+description = "Transcripción y traducción simultánea open source para conferencias, sobre Gemini Live API (o 100% local con Gemma)."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Apache-2.0" }
+authors = [{ name = "Nerdearla Vibeathon team" }]
+keywords = ["transcription", "subtitles", "realtime", "gemini", "conference"]
+
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "google-genai>=1.0",
+    "numpy>=1.26",
+    "pydantic>=2.7",
+    "python-multipart>=0.0.9",
+]
+
+[project.optional-dependencies]
+# Rute 100% local: whisper para STT + Gemma 3 vía Ollama para traducción.
+local = [
+    "faster-whisper>=1.1",
+    "httpx>=0.27",
+]
+dev = [
+    "pytest>=8",
+    "httpx>=0.27",
+]
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

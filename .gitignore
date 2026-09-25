@@ -1,0 +1,23 @@
+# Dependencies
+.env
+.venv/
+venv/
+node_modules/
+bower_components/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+build/
+dist/
+
+# Local data (OBS feeds, exports)
+data/
+*.local.json
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
